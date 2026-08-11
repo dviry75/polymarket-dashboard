@@ -1,138 +1,122 @@
 "use client";
 
+import "./live.css";
 import { useEffect, useMemo, useState } from "react";
-import * as mock from "./mock-data";
-import type { MachineStatus } from "./mock-data";
+import { AuthenticationRequiredError, boolValue, fetchLiveSnapshot, freshnessLabel, numberValue, objectValue, parseEventStart, textValue, type JsonRecord, type LiveSnapshot } from "./live-data";
 
-const statusMeta: Record<MachineStatus, { label: string; tone: string }> = {
-  active: { label: "פעילה", tone: "good" },
-  paused: { label: "מושהית", tone: "warn" },
-  disabled: { label: "מושבתת", tone: "muted" },
-  fault: { label: "תקלה", tone: "danger" },
+const TZ = "Asia/Jerusalem";
+const usd = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" });
+const num = new Intl.NumberFormat("he-IL", { maximumFractionDigits: 4 });
+const Card = ({ children, className = "" }: { children: React.ReactNode; className?: string }) => <section className={`card ${className}`}>{children}</section>;
+const Dot = ({ tone = "good" }: { tone?: "good" | "warn" | "danger" | "muted" }) => <span className={`status-dot ${tone}`} aria-hidden />;
+const Metric = ({ label, value, tone = "", note }: { label: string; value: string; tone?: string; note?: string }) => <div className="metric"><span>{label}{note && <small className="metric-note">{note}</small>}</span><strong className={tone}>{value}</strong></div>;
+const NA = ({ reason, compact = false }: { reason: string; compact?: boolean }) => <div className={`unavailable ${compact ? "compact" : ""}`}><b>לא זמין</b><span>{reason}</span></div>;
+const localTime = (value: unknown) => {
+  const stamp = typeof value === "number" ? value : Date.parse(textValue(value));
+  return Number.isFinite(stamp) ? new Date(stamp).toLocaleTimeString("he-IL", { timeZone: TZ, hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }) : "—";
 };
-
-function formatCountdown(value: number) {
-  const minutes = Math.floor(value / 60).toString().padStart(2, "0");
-  const seconds = (value % 60).toString().padStart(2, "0");
-  return `${minutes}:${seconds}`;
-}
-
-function StatusDot({ tone = "good" }: { tone?: string }) {
-  return <span className={`status-dot ${tone}`} aria-hidden="true" />;
-}
-
-function Card({ children, className = "" }: { children: React.ReactNode; className?: string }) {
-  return <section className={`card ${className}`}>{children}</section>;
-}
-
-function Metric({ label, value, tone = "" }: { label: string; value: string; tone?: string }) {
-  return <div className="metric"><span>{label}</span><strong className={tone}>{value}</strong></div>;
-}
-
-function BalanceChart({ mode }: { mode: string }) {
-  const width = 900, height = 240, padX = 32, padY = 28;
-  const values = useMemo(() => {
-    if (mode === "אירוע") return mock.balanceHistory.map(p => p.pnl);
-    if (mode === "מצטבר") {
-      let total = 0; return mock.balanceHistory.map(p => (total += p.pnl));
-    }
-    return mock.balanceHistory.map(p => p.balance);
-  }, [mode]);
-  const min = Math.min(...values), max = Math.max(...values), span = max - min || 1;
-  const pts = values.map((v, i) => ({ x: padX + i * ((width - padX * 2) / (values.length - 1)), y: height - padY - ((v - min) / span) * (height - padY * 2) }));
-  const line = pts.map(p => `${p.x},${p.y}`).join(" ");
-  const area = `${padX},${height-padY} ${line} ${width-padX},${height-padY}`;
-  return <div className="chart-wrap">
-    <div className="y-labels"><span>{mode === "ארנק" ? `$${max.toFixed(0)}` : `+$${max.toFixed(2)}`}</span><span>{mode === "ארנק" ? `$${((min+max)/2).toFixed(0)}` : "$0"}</span><span>{mode === "ארנק" ? `$${min.toFixed(0)}` : `-$${Math.abs(min).toFixed(2)}`}</span></div>
-    <svg className="line-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="גרף ביצועי הארנק">
-      {[50,120,190].map(y => <line key={y} x1="32" y1={y} x2="868" y2={y} className="gridline" />)}
-      <defs><linearGradient id="area" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="#2563eb" stopOpacity=".2"/><stop offset="1" stopColor="#2563eb" stopOpacity="0"/></linearGradient></defs>
-      <polygon points={area} fill="url(#area)" />
-      <polyline points={line} className="balance-line" />
-      {pts.map((p, i) => <g className="chart-point" key={i}>
-        <circle cx={p.x} cy={p.y} r="12" fill="transparent" />
-        <circle cx={p.x} cy={p.y} r="4.5" className={mock.balanceHistory[i].pnl >= 0 ? "profit-dot" : "loss-dot"} />
-        <foreignObject x={Math.max(5, Math.min(p.x - 76, width - 160))} y={Math.max(2, p.y - 108)} width="152" height="94" className="tooltip-box">
-          <div className="chart-tooltip" dir="rtl"><b>{mock.balanceHistory[i].label}</b><span>{mock.balanceHistory[i].side} · כניסה {mock.balanceHistory[i].entry}</span><span>יציאה {mock.balanceHistory[i].exit}</span><strong className={mock.balanceHistory[i].pnl >= 0 ? "positive" : "negative"}>{mock.balanceHistory[i].pnl >= 0 ? "+" : ""}${mock.balanceHistory[i].pnl}</strong></div>
-        </foreignObject>
-      </g>)}
-    </svg>
-    <div className="x-labels"><span>18:05</span><span>19:10</span><span>20:15</span><span>21:05</span><span>22:10</span></div>
-  </div>;
-}
-
-function ActivityChart() {
-  return <div className="bar-chart" aria-label="פעילות מסחר לפי ימים">
-    {mock.dailyActivity.map(d => <div className="bar-column" key={d.day}><div className="stack" title={`${d.wins} רווחיות, ${d.losses} הפסדיות, ${d.skipped} ללא כניסה`}><i className="wins" style={{height:`${d.wins*13}px`}}/><i className="losses" style={{height:`${d.losses*13}px`}}/><i className="skipped" style={{height:`${d.skipped*8}px`}}/></div><span>{d.day}</span></div>)}
-  </div>;
-}
+const countdown = (end: number | null, now: number) => {
+  if (!end) return "—";
+  const seconds = Math.max(0, Math.ceil((end - now) / 1000));
+  return `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
+};
+const formatBytes = (value: unknown) => {
+  const raw = numberValue(value); if (raw === null) return "לא זמין";
+  const units = ["B", "KB", "MB", "GB", "TB"]; let n = raw, unit = 0;
+  while (n >= 1024 && unit < units.length - 1) { n /= 1024; unit++; }
+  return `${n.toFixed(unit > 1 ? 2 : 0)} ${units[unit]}`;
+};
+const machine = (health: JsonRecord) => {
+  const strategy = objectValue(health.strategy);
+  if (boolValue(health.kill_switch_active)) return { label: "Kill Switch פעיל", tone: "danger" as const };
+  if (boolValue(strategy.pause_entries)) return { label: "כניסות מושהות", tone: "warn" as const };
+  return textValue(strategy.readiness) === "READY" ? { label: "מוכנה", tone: "good" as const } : { label: "לא מוכנה", tone: "danger" as const };
+};
+const quote = (books: JsonRecord, token: unknown, side: "best_bid" | "best_ask") => numberValue(objectValue(books[textValue(token)])[side]);
+const safeLog = (row: JsonRecord) => (textValue(row.requested_action) || textValue(row.reason_code) || textValue(row.category) || "אירוע מערכת").replaceAll("_", " ");
 
 export default function Home() {
-  const [machine, setMachine] = useState<MachineStatus>("active");
-  const [serverTime, setServerTime] = useState(new Date("2026-08-06T19:39:00Z"));
-  const [countdown, setCountdown] = useState(mock.event.secondsLeft);
-  const [nextCountdown, setNextCountdown] = useState(397);
-  const [positionOpen, setPositionOpen] = useState(true);
-  const [range, setRange] = useState("היום");
-  const [chartMode, setChartMode] = useState("ארנק");
-  const [modal, setModal] = useState<null | { title: string; body: string; action: () => void; danger?: boolean }>(null);
-  const [toast, setToast] = useState("");
-  const [alerts, setAlerts] = useState(mock.alerts);
-  const [details, setDetails] = useState(false);
+  const [snapshot, setSnapshot] = useState<LiveSnapshot | null>(null);
+  const [now, setNow] = useState(() => Date.now());
+  const [state, setState] = useState<"loading" | "ready" | "auth" | "error">("loading");
+  const [error, setError] = useState("");
 
-  useEffect(() => { const id = setInterval(() => { setServerTime(new Date()); setCountdown(v => Math.max(0, v-1)); setNextCountdown(v => Math.max(0, v-1)); }, 1000); return () => clearInterval(id); }, []);
-  useEffect(() => { if (!toast) return; const id = setTimeout(() => setToast(""), 2600); return () => clearTimeout(id); }, [toast]);
+  useEffect(() => { const id = window.setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(id); }, []);
+  useEffect(() => {
+    let stopped = false, controller: AbortController | null = null, timer: number | null = null;
+    const poll = async () => {
+      if (stopped || controller) return;
+      controller = new AbortController(); const timeout = window.setTimeout(() => controller?.abort(), 4500);
+      try {
+        const data = await fetchLiveSnapshot(controller.signal);
+        if (!stopped) { setSnapshot(data); setState("ready"); setError(""); }
+      } catch (reason) {
+        if (!stopped) {
+          if (reason instanceof AuthenticationRequiredError) setState("auth");
+          else { setState("error"); setError(reason instanceof Error ? reason.message : "שגיאה לא ידועה"); }
+        }
+      } finally {
+        clearTimeout(timeout); controller = null;
+        if (!stopped) timer = window.setTimeout(poll, document.hidden ? 30000 : 5000);
+      }
+    };
+    const visible = () => { if (!document.hidden && !controller) { if (timer) clearTimeout(timer); void poll(); } };
+    document.addEventListener("visibilitychange", visible); void poll();
+    return () => { stopped = true; if (timer) clearTimeout(timer); controller?.abort(); document.removeEventListener("visibilitychange", visible); };
+  }, []);
 
-  const ask = (title: string, body: string, action: () => void, danger = false) => setModal({ title, body, action, danger });
-  const perform = () => { modal?.action(); setToast("הפעולה עודכנה בהדמיה בהצלחה"); setModal(null); };
-  const status = statusMeta[machine];
+  const health = snapshot?.health ?? {}, envelope = snapshot?.strategy ?? {};
+  const strategy = objectValue(health.strategy || envelope.strategy);
+  const account = objectValue(health.account_identity || envelope.account);
+  const marketWs = objectValue(health.market_ws || envelope.market_ws), userWs = objectValue(health.user_ws || envelope.user_ws);
+  const config = objectValue(health.config), books = objectValue(marketWs.books), status = machine(health);
+  const positions = Array.isArray(strategy.positions) ? strategy.positions.map(objectValue) : [], position = positions[0] ?? null;
+  const event = objectValue(strategy.event), eventStart = parseEventStart(event.event_id);
+  const eventCurrent = !!eventStart && now >= eventStart && now < eventStart + 300_000;
+  const market = eventCurrent ? (snapshot?.markets ?? []).find(row => textValue(row.event_id) === textValue(event.event_id)) ?? null : null;
+  const next = useMemo(() => (snapshot?.markets ?? []).map(row => ({ start: parseEventStart(row.event_id) })).filter(x => x.start !== null && x.start > now).sort((a, b) => (a.start ?? 0) - (b.start ?? 0))[0] ?? null, [snapshot?.markets, now]);
+  const available = numberValue(account.balance_usd ?? account.available_balance_usd ?? account.balance), publicValue = numberValue(account.public_positions_value);
+  const shares = position ? numberValue(position.remaining_shares_text) : null, sellable = position ? numberValue(position.sellable_shares_text) : null;
+  const acquired = position ? numberValue(position.acquired_shares_text) : null, cost = position ? numberValue(position.cost_all_in_text) : null;
+  const bid = position ? quote(books, position.token_id, "best_bid") : null;
+  const currentValue = sellable !== null && bid !== null ? sellable * bid : null;
+  const remainingCost = cost !== null && shares !== null && acquired && acquired > 0 ? cost * shares / acquired : null;
+  const unrealized = currentValue !== null && remainingCost !== null ? currentValue - remainingCost : null;
+  const marketConnected = textValue(marketWs.status) === "CONNECTED" && !boolValue(marketWs.stale);
+  const userConnected = textValue(userWs.status) === "CONNECTED" && !boolValue(userWs.stale);
+  const reconReady = textValue(strategy.reconciliation_readiness) === "READY";
+  const alerts = Array.isArray(health.alerts) ? health.alerts.map(objectValue) : [];
+  const healthy = state === "ready" && status.tone === "good" && marketConnected && reconReady;
 
   return <main dir="rtl">
     <header className="topbar">
-      <div className="brand"><div className="brand-mark">P</div><div><b>Polymarket Robot</b><small>מרכז שליטה חי</small></div></div>
-      <div className="top-statuses">
-        <span className="top-chip"><StatusDot tone={status.tone}/><b>המכונה {status.label}</b></span>
-        <span className="top-chip"><StatusDot/>Polymarket מחובר</span>
-        <span className="top-chip data-age">עודכן לפני <b>120ms</b></span>
-        <span className="server-clock"><b>{serverTime.toLocaleTimeString("en-GB", {hour12:false, timeZone:"Asia/Jerusalem"})}</b><small>Asia/Jerusalem</small></span>
-      </div>
-      <button className={machine === "active" ? "button danger-outline" : "button primary"} onClick={() => machine === "active" ? ask("השבתת המכונה", "המכונה תפסיק לקבל כניסות חדשות. זוהי הדמיה בלבד.", () => setMachine("disabled"), true) : ask("הפעלת המכונה", "המכונה תחזור למצב פעילות בהדמיה.", () => setMachine("active"))}>{machine === "active" ? "השבת מכונה" : "הפעל מכונה"}</button>
+      <div className="brand"><div className="brand-mark">P</div><div><b>Polymarket Robot</b><small>תצוגת LIVE מאומתת</small></div></div>
+      <div className="top-statuses"><span className="top-chip"><Dot tone={state === "ready" ? status.tone : "muted"}/><b>{state === "ready" ? status.label : "אין נתונים"}</b></span><span className="top-chip"><Dot tone={marketConnected ? "good" : "danger"}/>Market WS {marketConnected ? "מחובר" : "לא תקין"}</span><span className="top-chip data-age">נתון אחרון: <b>{freshnessLabel(marketWs.last_message_at, now)}</b></span><span className="server-clock"><b>{new Date(textValue(health.time) || now).toLocaleTimeString("en-GB", { hour12: false, timeZone: TZ })}</b><small>Asia/Jerusalem</small></span></div>
+      <button className="button danger-outline" disabled title="פעולות שליטה אינן מחוברות">שליטה מושבתת</button>
     </header>
-
     <div className="page-shell">
-      <div className="page-title"><div><p className="eyebrow">LIVE CONTROL</p><h1>לילה טוב, דביר</h1><p>כל מה שדורש את תשומת הלב שלך, במסך אחד.</p></div><div className="system-ok"><StatusDot/><span><b>המערכת פועלת באופן תקין</b><small>כל הבדיקות האחרונות עברו בהצלחה</small></span></div></div>
-
-      {alerts.length ? <div className="alert-banner"><div className="alert-icon">!</div><div><b>{alerts[0].title}</b><span>{alerts[0].body}</span></div><button aria-label="סגור התראה" onClick={() => setAlerts([])}>×</button></div> : <div className="all-good"><StatusDot/><b>הכול תקין — אין התראות פעילות</b></div>}
+      <div className="page-title"><div><p className="eyebrow">LIVE · READ ONLY</p><h1>מרכז מצב מסחר</h1><p>נתוני ייצור בלבד; ללא Mock וללא פעולות מסחר מהדפדפן.</p></div><div className={`system-ok ${healthy ? "" : "not-ok"}`}><Dot tone={healthy ? "good" : "warn"}/><span><b>{healthy ? "המערכת מדווחת READY" : "נדרשת תשומת לב"}</b><small>{healthy ? "שוק ו-Reconciliation תקינים" : "בדוק את החיבור והמדדים"}</small></span></div></div>
+      {state === "auth" && <div className="auth-banner"><div><b>הנתונים מוגנים ודורשים התחברות</b><span>אף נתון תפעולי לא נטען ללא session מורשה.</span></div><a className="button primary" href="/live/login">התחברות ל-LIVE</a></div>}
+      {state === "error" && <div className="alert-banner danger-banner"><div className="alert-icon">!</div><div><b>לא ניתן לרענן</b><span>{error}. נתונים קודמים מסומנים לפי גילם.</span></div></div>}
+      {state === "loading" && <div className="loading-banner">טוען נתוני LIVE…</div>}
+      {state === "ready" && (alerts.length ? <div className="alert-banner"><div className="alert-icon">!</div><div><b>{textValue(alerts[0].severity) || "התראה"}</b><span>{textValue(alerts[0].message) || textValue(alerts[0].reason_code)}</span></div></div> : <div className="all-good"><Dot/><b>אין התראות פעילות</b></div>)}
 
       <div className="overview-grid">
-        <Card className="wallet-card"><div className="card-head"><span>יתרת ארנק</span><span className="live-badge">LIVE</span></div><div className="money">${mock.wallet.total.toFixed(2)}</div><div className="gain">↗ +${mock.wallet.todayProfit} <span>היום · +{mock.wallet.todayPercent}%</span></div><div className="metric-list"><Metric label="זמין למסחר" value={`$${mock.wallet.available}`}/><Metric label="בפוזיציה / פקודות" value={`$${mock.wallet.committed.toFixed(2)}`}/></div></Card>
-        <Card className="event-card"><div className="card-head"><span>אירוע נוכחי</span><span className="soft-badge">{mock.event.range}</span></div><h2>{mock.event.name}</h2><div className="event-market"><div><span>YES</span><b className="positive">{mock.event.yes}</b></div><div><span>NO</span><b>{mock.event.no}</b></div><div className="countdown"><span>נותר לסיום</span><b>{formatCountdown(countdown)}</b></div></div><div className="strategy-line"><StatusDot tone="warn"/><span><b>{mock.event.strategy}</b><small>{mock.event.lock}</small></span></div></Card>
-        <Card className="position-card"><div className="card-head"><span>עסקה נוכחית</span><label className="demo-toggle">הצג עסקה <input type="checkbox" checked={positionOpen} onChange={e=>setPositionOpen(e.target.checked)}/><i/></label></div>{positionOpen ? <><div className="position-lead"><span className="yes-pill">YES</span><div><small>רווח נוכחי</small><b className="positive">+${mock.position.pnl}</b></div></div><div className="mini-grid"><Metric label="מחיר כניסה" value={`${mock.position.entry}`}/><Metric label="טוקנים" value={`${mock.position.tokens}`}/><Metric label="הושקע" value={`$${mock.position.invested.toFixed(2)}`}/><Metric label="שווי נוכחי" value={`$${mock.position.current}`}/></div><div className="order-row"><span>פקודה פתוחה</span><b>{mock.position.order}</b></div></> : <div className="empty-state"><div className="empty-circle">—</div><b>אין כרגע עסקה פתוחה</b><span>המערכת ממשיכה לנטר הזדמנויות</span></div>}</Card>
-        <Card className="next-card"><div className="card-head"><span>האירוע הבא</span><span className="soft-badge">22:20</span></div><div className="next-time"><small>נפתח בעוד</small><b>{formatCountdown(nextCountdown)}</b></div><div className="eligibility"><StatusDot/><div><b>האסטרטגיה תהיה פעילה</b><span>האירוע הבא נמצא בחלון הפעילות</span></div></div><div className="next-rule"><span>חוק פעיל</span><b>Robot Polymarket</b></div></Card>
+        <Card><div className="card-head"><span>יתרה זמינה</span><span className="live-badge">LIVE · snapshot</span></div>{available !== null ? <><div className="money">{usd.format(available)}</div><div className="source-note">נמדד {freshnessLabel(account.sampled_at ?? account.updated_at, now)}</div></> : <NA reason="Snapshot החשבון אינו כולל יתרה זמינה מאומתת." compact/>}<div className="metric-list"><Metric label="שווי פוזיציות ציבורי" value={publicValue === null ? "לא זמין" : usd.format(publicValue)} note="לא valuation שמרני"/><Metric label="שווי כולל" value="לא זמין" note="reserved balance לא מוגדר"/></div></Card>
+        <Card className="event-card"><div className="card-head"><span>אירוע נוכחי</span><span className="soft-badge">{eventCurrent && eventStart ? `${localTime(eventStart)}–${localTime(eventStart + 300_000)}` : "לא זמין"}</span></div>{eventCurrent && market ? <><h2>Bitcoin Up or Down · 5 Minutes</h2><div className="event-market"><div><span>YES bid / ask</span><b className="positive">{quote(books, market.yes_token_id, "best_bid") === null || quote(books, market.yes_token_id, "best_ask") === null ? "—" : `${num.format(quote(books, market.yes_token_id, "best_bid")!)} / ${num.format(quote(books, market.yes_token_id, "best_ask")!)}`}</b></div><div><span>NO bid / ask</span><b>{quote(books, market.no_token_id, "best_bid") === null || quote(books, market.no_token_id, "best_ask") === null ? "—" : `${num.format(quote(books, market.no_token_id, "best_bid")!)} / ${num.format(quote(books, market.no_token_id, "best_ask")!)}`}</b></div><div className="countdown"><span>נותר</span><b>{countdown((eventStart ?? 0) + 300_000, now)}</b></div></div><div className="strategy-line"><Dot tone={textValue(strategy.readiness) === "READY" ? "good" : "warn"}/><span><b>{textValue(event.status) || "מצב לא ידוע"}</b><small>{textValue(event.lock_reason) || textValue(strategy.block_reason) || "ללא סיבת חסימה"}</small></span></div></> : <NA reason="אין API מצומצם ובטוח שממפה את האירוע הפעיל למחירי YES/NO; endpoint השוק הגולמי אינו נטען לדפדפן." compact/>}</Card>
+        <Card><div className="card-head"><span>פוזיציה פתוחה</span><span className="quality-badge">LIVE</span></div>{position ? <><div className="position-lead"><span className="yes-pill">{textValue(position.outcome) || "—"}</span><div><small>P&amp;L לא ממומש</small><b className={unrealized === null ? "" : unrealized >= 0 ? "positive" : "negative"}>{unrealized === null ? "לא זמין" : `${unrealized >= 0 ? "+" : ""}${usd.format(unrealized)}`}</b></div></div><div className="mini-grid"><Metric label="מחיר כניסה" value={numberValue(position.average_entry_price_text) === null ? "—" : num.format(numberValue(position.average_entry_price_text)!)}/><Metric label="shares נותרו" value={shares === null ? "—" : num.format(shares)}/><Metric label="עלות all-in מיוחסת" value={remainingCost === null ? "—" : usd.format(remainingCost)}/><Metric label="שווי לפי best bid" value={currentValue === null ? "—" : usd.format(currentValue)}/></div><div className="order-row"><span>best bid</span><b>{bid === null ? "לא זמין" : num.format(bid)}</b></div></> : <div className="empty-state"><div className="empty-circle">—</div><b>אין פוזיציה פתוחה</b><span>לפי active_positions במקור הפעיל</span></div>}</Card>
+        <Card><div className="card-head"><span>האירוע הבא</span><span className="soft-badge">{next?.start ? localTime(next.start) : "לא זמין"}</span></div>{next?.start ? <><div className="next-time"><small>נפתח בעוד</small><b>{countdown(next.start, now)}</b></div><div className="eligibility"><Dot tone={textValue(strategy.readiness) === "READY" ? "good" : "warn"}/><div><b>{textValue(strategy.readiness) === "READY" ? "המערכת מוכנה" : "המערכת אינה READY"}</b><span>{textValue(strategy.block_reason) || "זכאות סופית נקבעת בזמן אמת"}</span></div></div></> : <NA reason="לא נמצא market עתידי ב-100 הרשומות האחרונות." compact/>}<div className="next-rule"><span>LIVE submission</span><b>{boolValue(config.live_order_submission_enabled) ? "מופעל בשרת" : "כבוי בשרת"}</b></div></Card>
       </div>
 
       <div className="content-grid">
-        <Card className="balance-section"><div className="section-head"><div><h2>ביצועי הארנק</h2><p>יתרה לאחר כל אירוע</p></div><div className="controls"><div className="segmented">{["ארנק","מצטבר","אירוע"].map(v=><button key={v} className={chartMode===v?"active":""} onClick={()=>setChartMode(v)}>{v === "ארנק" ? "יתרת ארנק" : v === "מצטבר" ? "רווח מצטבר" : "לכל אירוע"}</button>)}</div><select value={range} onChange={e=>setRange(e.target.value)} aria-label="טווח זמן"><option>היום</option><option>אתמול</option><option>3 ימים</option><option>7 ימים</option><option>30 ימים</option><option>טווח מותאם</option></select></div></div><BalanceChart mode={chartMode}/></Card>
-
-        <Card className="control-card"><div className="section-head"><div><h2>שליטה במכונה</h2><p>פעולות תפעוליות</p></div><span className={`state-pill ${status.tone}`}><StatusDot tone={status.tone}/>{status.label}</span></div><div className="control-actions">
-          <button onClick={()=>ask(machine === "active" ? "השבתת המכונה" : "הפעלת המכונה", "שינוי מצב מקומי לצורך הדגמה בלבד.", ()=>setMachine(machine === "active" ? "disabled" : "active"), machine === "active")}>{machine === "active" ? "השבת מכונה" : "הפעל מכונה"}<small>שינוי מצב המערכת</small></button>
-          <button className="warning" onClick={()=>ask("השהיית כניסות", "לא יתאפשרו כניסות חדשות עד לחידוש.", ()=>setMachine("paused"))}>השהה כניסות<small>עסקאות קיימות יישארו פתוחות</small></button>
-          <button onClick={()=>ask("חידוש כניסות", "המערכת תחזור לחפש הזדמנויות חדשות.", ()=>setMachine("active"))}>חדש כניסות<small>המשך פעילות רגילה</small></button>
-          <button onClick={()=>ask("ביטול פקודות", "כל הפקודות הפתוחות יסומנו כמבוטלות בהדמיה.", ()=>setPositionOpen(false), true)}>בטל פקודות פתוחות<small>העסקה עצמה לא תיסגר</small></button>
-          <button onClick={()=>ask("רענון התאמה", "תוצג הדמיה של בדיקת התאמה מול Polymarket.", ()=>{})}>רענן התאמה<small>בדיקת פקודות ופוזיציות</small></button>
-          <button className="emergency" onClick={()=>ask("עצירת חירום", "המכונה תושבת מיידית וכל הפעילות תיעצר בהדמיה.", ()=>setMachine("fault"), true)}>עצירת חירום<small>עצירה מיידית מלאה</small></button>
-        </div></Card>
-
-        <Card className="activity-card"><div className="section-head"><div><h2>פעילות מסחר</h2><p>התפלגות לפי ימים</p></div><div className="legend"><span><i className="lg-win"/>רווחיות</span><span><i className="lg-loss"/>הפסדיות</span><span><i className="lg-skip"/>ללא כניסה</span></div></div><ActivityChart/><div className="stats-grid">{mock.stats.map(([label,value])=><Metric key={label} label={label} value={value} tone={label === "רווח נקי" ? "positive" : ""}/>)}</div></Card>
-
-        <Card className="log-card"><div className="section-head"><div><h2>יומן פעילות חי</h2><p>הפעולות האחרונות של המכונה</p></div><button className="text-button" onClick={()=>setDetails(v=>!v)}>{details ? "הסתר פרטים טכניים" : "הצג פרטים טכניים"}</button></div><div className="log-list">{mock.logs.map((log,i)=><div className={`log-row ${log.tone}`} key={i}><time>{log.time}</time><i/><div><b>{log.text}</b>{details&&<code>{log.detail}</code>}</div></div>)}</div></Card>
+        <Card className="balance-section"><div className="section-head"><div><h2>ביצועי הארנק</h2><p>יתרה, רווח מצטבר ו-P&amp;L לפי אירוע</p></div><div className="controls"><div className="segmented"><button disabled>יתרת ארנק</button><button disabled>רווח מצטבר</button><button disabled>לכל אירוע</button></div><select disabled><option>היום</option><option>אתמול</option><option>3 ימים</option><option>7 ימים</option><option>טווח מותאם</option></select></div></div><NA reason="אין מקור היסטורי שמוכיח LIVE בלבד. רשומות ותיקות ללא provenance אינן מוצגות ואינן מחושבות."/></Card>
+        <Card className="control-card"><div className="section-head"><div><h2>שליטה במכונה</h2><p>מופרדת בכוונה מתצוגת הנתונים</p></div><span className={`state-pill ${status.tone}`}><Dot tone={status.tone}/>{status.label}</span></div><div className="readonly-callout"><b>קריאה בלבד</b><span>אין בדף endpoint פקודה, token מפעיל או טיפול ב-CSRF.</span></div><div className="control-actions disabled-actions"><button disabled>הפסק כניסות<small>נפרד מהשבתת מסחר</small></button><button disabled>השבת מסחר<small>אינו עוצר systemd</small></button><button disabled>בטל פקודות<small>אינו סוגר פוזיציות</small></button><button disabled>סגור פוזיציות<small>דורש אישור נפרד</small></button><button disabled>עצור שירות<small>לא מחובר</small></button><button className="emergency" disabled>Kill Switch<small>לא זמין כאן</small></button></div></Card>
+        <Card className="activity-card"><div className="section-head"><div><h2>פעילות מסחר</h2><p>מדדים היסטוריים מוכחי LIVE בלבד</p></div></div><NA reason="עסקאות, win rate, רווח נקי ועמלות חסרים עד להפרדה אמינה בין LIVE ל-DEMO/PAPER."/><div className="stats-grid unavailable-stats">{["סך עסקאות","רווחיות","הפסדיות","אחוז הצלחה","רווח ממוצע","הפסד ממוצע","רווח נקי","עמלות"].map(label => <Metric key={label} label={label} value="—"/>)}</div></Card>
+        <Card className="log-card"><div className="section-head"><div><h2>יומן פעילות חי</h2><p>ללא IDs, כתובות או payload גולמי</p></div><span className="quality-badge">7 אחרונים</span></div>{snapshot?.logs.length ? <div className="log-list">{snapshot.logs.map((log, i) => { const sev = textValue(log.severity).toUpperCase(); const tone = ["ERROR","CRITICAL"].includes(sev) ? "error" : ["WARN","WARNING"].includes(sev) ? "warning" : "info"; return <div className={`log-row ${tone}`} key={`${textValue(log.occurred_at)}-${i}`}><time>{localTime(log.occurred_at)}</time><i/><div><b>{safeLog(log)}</b><code>{textValue(log.category)} · {textValue(log.result_status)}</code></div></div>; })}</div> : <NA reason="אין רשומות זמינות או שנדרשת התחברות." compact/>}</Card>
       </div>
 
-      <Card className="health-card"><div className="section-head"><div><h2>בריאות המערכת</h2><p>מדדי תשתית בזמן אמת</p></div><span className="state-pill good"><StatusDot/>תקין</span></div><div className="health-grid"><div className="storage"><div><span>אחסון</span><b>{mock.systemHealth.storageUsed}GB מתוך {mock.systemHealth.storageTotal}GB</b></div><div className="progress"><i style={{width:`${mock.systemHealth.storageUsed/mock.systemHealth.storageTotal*100}%`}}/></div></div><Metric label="RAM" value={`${mock.systemHealth.ram}%`}/><Metric label="CPU" value={`${mock.systemHealth.cpu}%`}/><Metric label="זמן פעילות רציף" value={mock.systemHealth.uptime}/><Metric label="WebSocket" value={mock.systemHealth.websocket} tone="positive"/><Metric label="מסד נתונים" value={mock.systemHealth.database} tone="positive"/><Metric label="הנתון האחרון" value={mock.systemHealth.lastData}/><Metric label="זמן תגובה Polymarket" value={mock.systemHealth.latency}/></div></Card>
-      <footer>Polymarket Robot · נתוני הדגמה בלבד · אין פעולות מסחר אמיתיות</footer>
+      <Card className="health-card"><div className="section-head"><div><h2>בריאות המערכת</h2><p>מדדים מהשירות הפעיל</p></div><span className={`state-pill ${healthy ? "good" : "warn"}`}><Dot tone={healthy ? "good" : "warn"}/>{healthy ? "תקין" : "בדיקה נדרשת"}</span></div><div className="health-grid"><Metric label="מסד נתונים" value={formatBytes(objectValue(envelope.database).size_bytes)} note="גודל קובץ"/><Metric label="Market WS" value={textValue(marketWs.status) || "לא זמין"} tone={marketConnected ? "positive" : "negative"}/><Metric label="User WS" value={textValue(userWs.status) || "לא זמין"} tone={userConnected ? "positive" : "negative"}/><Metric label="Reconciliation" value={textValue(strategy.reconciliation_readiness) || "לא זמין"} tone={reconReady ? "positive" : "negative"}/><Metric label="Robot readiness" value={textValue(strategy.readiness) || "לא זמין"}/><Metric label="Pause entries" value={boolValue(strategy.pause_entries) ? "פעיל" : "לא פעיל"}/><Metric label="Kill Switch" value={boolValue(health.kill_switch_active) ? "פעיל" : "לא פעיל"}/><Metric label="עדכון אחרון" value={freshnessLabel(marketWs.last_message_at, now)}/></div><div className="missing-infra">CPU, RAM, disk filesystem, process uptime ו-latency אינם נחשפים ב-API הקיים ולכן אינם מוצגים.</div></Card>
+      <footer>Polymarket Robot · LIVE · READ ONLY · Asia/Jerusalem · מחירים 0–1 · USD</footer>
     </div>
-
-    {modal && <div className="modal-backdrop" role="presentation" onMouseDown={()=>setModal(null)}><div className="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title" onMouseDown={e=>e.stopPropagation()}><div className={`modal-symbol ${modal.danger?"danger":""}`}>{modal.danger?"!":"✓"}</div><h2 id="modal-title">{modal.title}</h2><p>{modal.body}</p><div><button className="button secondary" onClick={()=>setModal(null)}>ביטול</button><button className={`button ${modal.danger?"danger-solid":"primary"}`} onClick={perform}>אישור</button></div></div></div>}
-    {toast && <div className="toast"><StatusDot/>{toast}</div>}
   </main>;
 }
