@@ -1,122 +1,106 @@
 "use client";
 
 import "./live.css";
-import { useEffect, useMemo, useState } from "react";
-import { AuthenticationRequiredError, boolValue, fetchLiveSnapshot, freshnessLabel, numberValue, objectValue, parseEventStart, textValue, type JsonRecord, type LiveSnapshot } from "./live-data";
+import { useEffect, useState } from "react";
+import { AuthenticationRequiredError, arrayValue, boolValue, fetchDashboardSnapshot, logout, metricValue, numberValue, objectValue, qualityValue, textValue, type DashboardQuery, type DashboardSnapshot, type JsonRecord, type MetricValue, type Quality } from "./live-data";
 
 const TZ = "Asia/Jerusalem";
-const usd = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" });
+const usd = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 });
 const num = new Intl.NumberFormat("he-IL", { maximumFractionDigits: 4 });
+const dateTime = (value: unknown) => { const stamp = Date.parse(textValue(value)); return Number.isFinite(stamp) ? new Date(stamp).toLocaleString("he-IL", { timeZone: TZ, hour12: false }) : "—"; };
+const secondsLabel = (value: unknown) => { const seconds = numberValue(value); if (seconds === null) return "לא זמין"; if (seconds < 60) return `${Math.round(seconds)} שנ׳`; if (seconds < 3600) return `${Math.floor(seconds / 60)} דק׳`; return `${Math.floor(seconds / 3600)} שע׳`; };
+const bytes = (value: unknown) => { let raw = numberValue(value); if (raw === null) return "לא זמין"; const units = ["B", "KB", "MB", "GB", "TB"]; let i = 0; while (raw >= 1024 && i < units.length - 1) { raw /= 1024; i++; } return `${raw.toFixed(i > 1 ? 2 : 0)} ${units[i]}`; };
+const money = (value: unknown) => numberValue(value) === null ? "—" : usd.format(numberValue(value)!);
+const displayMetric = (metric: MetricValue) => metric.value === null ? "—" : metric.unit === "USD" ? money(metric.value) : textValue(metric.value);
+const tone = (value: boolean | Quality | string) => value === true || value === "REAL" || value === "READY" || value === "CONNECTED" || value === "ACTIVE" ? "good" : value === "STALE" || value === "PARTIAL" || value === "ESTIMATED" ? "warn" : "danger";
+const countdown = (endsAt: unknown, now: number) => { const end = Date.parse(textValue(endsAt)); if (!Number.isFinite(end)) return "—"; const seconds = Math.max(0, Math.ceil((end - now) / 1000)); return `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`; };
+
 const Card = ({ children, className = "" }: { children: React.ReactNode; className?: string }) => <section className={`card ${className}`}>{children}</section>;
-const Dot = ({ tone = "good" }: { tone?: "good" | "warn" | "danger" | "muted" }) => <span className={`status-dot ${tone}`} aria-hidden />;
-const Metric = ({ label, value, tone = "", note }: { label: string; value: string; tone?: string; note?: string }) => <div className="metric"><span>{label}{note && <small className="metric-note">{note}</small>}</span><strong className={tone}>{value}</strong></div>;
-const NA = ({ reason, compact = false }: { reason: string; compact?: boolean }) => <div className={`unavailable ${compact ? "compact" : ""}`}><b>לא זמין</b><span>{reason}</span></div>;
-const localTime = (value: unknown) => {
-  const stamp = typeof value === "number" ? value : Date.parse(textValue(value));
-  return Number.isFinite(stamp) ? new Date(stamp).toLocaleTimeString("he-IL", { timeZone: TZ, hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }) : "—";
-};
-const countdown = (end: number | null, now: number) => {
-  if (!end) return "—";
-  const seconds = Math.max(0, Math.ceil((end - now) / 1000));
-  return `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
-};
-const formatBytes = (value: unknown) => {
-  const raw = numberValue(value); if (raw === null) return "לא זמין";
-  const units = ["B", "KB", "MB", "GB", "TB"]; let n = raw, unit = 0;
-  while (n >= 1024 && unit < units.length - 1) { n /= 1024; unit++; }
-  return `${n.toFixed(unit > 1 ? 2 : 0)} ${units[unit]}`;
-};
-const machine = (health: JsonRecord) => {
-  const strategy = objectValue(health.strategy);
-  if (boolValue(health.kill_switch_active)) return { label: "Kill Switch פעיל", tone: "danger" as const };
-  if (boolValue(strategy.pause_entries)) return { label: "כניסות מושהות", tone: "warn" as const };
-  return textValue(strategy.readiness) === "READY" ? { label: "מוכנה", tone: "good" as const } : { label: "לא מוכנה", tone: "danger" as const };
-};
-const quote = (books: JsonRecord, token: unknown, side: "best_bid" | "best_ask") => numberValue(objectValue(books[textValue(token)])[side]);
-const safeLog = (row: JsonRecord) => (textValue(row.requested_action) || textValue(row.reason_code) || textValue(row.category) || "אירוע מערכת").replaceAll("_", " ");
+const Dot = ({ tone: value = "good" }: { tone?: "good" | "warn" | "danger" | "muted" }) => <span className={`status-dot ${value}`} aria-hidden />;
+const Badge = ({ quality }: { quality: Quality }) => <span className={`quality-badge quality-${quality.toLowerCase()}`}>{quality}</span>;
+const Metric = ({ label, value, note, valueTone = "" }: { label: string; value: string; note?: string; valueTone?: string }) => <div className="metric"><span>{label}{note && <small className="metric-note">{note}</small>}</span><strong className={valueTone}>{value}</strong></div>;
+const Empty = ({ quality = "UNAVAILABLE", reason }: { quality?: Quality; reason: string }) => <div className={`unavailable state-${quality.toLowerCase()}`}><Badge quality={quality}/><b>{quality === "STALE" ? "נתון ישן" : quality === "ERROR" ? "שגיאה" : "אין נתון להצגה"}</b><span>{reason}</span></div>;
+const QualityMetric = ({ label, raw }: { label: string; raw: unknown }) => { const metric = metricValue(raw); return <div className="quality-metric"><Metric label={label} value={displayMetric(metric)} note={metric.reason || metric.source}/><Badge quality={metric.quality}/></div>; };
+
+function TrendChart({ rows }: { rows: JsonRecord[] }) {
+  const points = rows.map((row, index) => ({ index, day: textValue(row.day), value: numberValue(row.cumulative_pnl_usd) })).filter((point): point is { index: number; day: string; value: number } => point.value !== null);
+  if (!points.length) return <Empty reason="אין lifecycle פיננסי מאומת בטווח שנבחר."/>;
+  const values = points.map(point => point.value), min = Math.min(...values, 0), max = Math.max(...values, 0), spread = Math.max(1, max - min);
+  const path = points.map((point, index) => `${index ? "L" : "M"} ${points.length === 1 ? 500 : (index / (points.length - 1)) * 1000} ${220 - ((point.value - min) / spread) * 190}`).join(" ");
+  return <div className="chart-wrap" aria-label="גרף P&L מצטבר"><svg className="line-chart" viewBox="0 0 1000 240" preserveAspectRatio="none"><line className="gridline" x1="0" y1="220" x2="1000" y2="220"/><line className="gridline" x1="0" y1="125" x2="1000" y2="125"/><line className="gridline" x1="0" y1="30" x2="1000" y2="30"/><path className="balance-line" d={path}/>{points.map((point, index) => <circle key={`${point.day}-${index}`} className={point.value >= 0 ? "profit-dot" : "loss-dot"} cx={points.length === 1 ? 500 : (index / (points.length - 1)) * 1000} cy={220 - ((point.value - min) / spread) * 190} r="6"><title>{point.day}: {money(point.value)}</title></circle>)}</svg><div className="x-labels">{points.map(point => <span key={point.day}>{point.day.slice(5)}</span>)}</div></div>;
+}
 
 export default function Home() {
-  const [snapshot, setSnapshot] = useState<LiveSnapshot | null>(null);
-  const [now, setNow] = useState(() => Date.now());
+  const [query, setQuery] = useState<DashboardQuery>({ range: "today", page: 1, pageSize: 25 });
+  const [snapshot, setSnapshot] = useState<DashboardSnapshot | null>(null);
   const [state, setState] = useState<"loading" | "ready" | "auth" | "error">("loading");
   const [error, setError] = useState("");
+  const [now, setNow] = useState(0);
+  const queryKey = JSON.stringify(query);
 
-  useEffect(() => { const id = window.setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(id); }, []);
+  useEffect(() => { const clock = window.setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(clock); }, []);
   useEffect(() => {
-    let stopped = false, controller: AbortController | null = null, timer: number | null = null;
+    let stopped = false, active: AbortController | null = null, timer: number | undefined;
     const poll = async () => {
-      if (stopped || controller) return;
-      controller = new AbortController(); const timeout = window.setTimeout(() => controller?.abort(), 4500);
-      try {
-        const data = await fetchLiveSnapshot(controller.signal);
-        if (!stopped) { setSnapshot(data); setState("ready"); setError(""); }
-      } catch (reason) {
-        if (!stopped) {
-          if (reason instanceof AuthenticationRequiredError) setState("auth");
-          else { setState("error"); setError(reason instanceof Error ? reason.message : "שגיאה לא ידועה"); }
-        }
-      } finally {
-        clearTimeout(timeout); controller = null;
-        if (!stopped) timer = window.setTimeout(poll, document.hidden ? 30000 : 5000);
-      }
+      if (stopped || active) return;
+      active = new AbortController(); const timeout = window.setTimeout(() => active?.abort(), 8000);
+      try { const data = await fetchDashboardSnapshot(query, active.signal); if (!stopped) { setSnapshot(data); setState("ready"); setError(""); } }
+      catch (reason) { if (!stopped) { if (reason instanceof AuthenticationRequiredError) setState("auth"); else { setState("error"); setError(reason instanceof Error ? reason.message : "בקשה נכשלה"); } } }
+      finally { clearTimeout(timeout); active = null; if (!stopped) timer = window.setTimeout(poll, document.hidden ? 60000 : 10000); }
     };
-    const visible = () => { if (!document.hidden && !controller) { if (timer) clearTimeout(timer); void poll(); } };
-    document.addEventListener("visibilitychange", visible); void poll();
-    return () => { stopped = true; if (timer) clearTimeout(timer); controller?.abort(); document.removeEventListener("visibilitychange", visible); };
-  }, []);
+    const visibility = () => { if (!document.hidden && !active) { if (timer) clearTimeout(timer); void poll(); } };
+    document.addEventListener("visibilitychange", visibility); void poll();
+    return () => { stopped = true; if (timer) clearTimeout(timer); active?.abort(); document.removeEventListener("visibilitychange", visibility); };
+  // queryKey is a stable serialization that prevents duplicate polling on render.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [queryKey]);
 
-  const health = snapshot?.health ?? {}, envelope = snapshot?.strategy ?? {};
-  const strategy = objectValue(health.strategy || envelope.strategy);
-  const account = objectValue(health.account_identity || envelope.account);
-  const marketWs = objectValue(health.market_ws || envelope.market_ws), userWs = objectValue(health.user_ws || envelope.user_ws);
-  const config = objectValue(health.config), books = objectValue(marketWs.books), status = machine(health);
-  const positions = Array.isArray(strategy.positions) ? strategy.positions.map(objectValue) : [], position = positions[0] ?? null;
-  const event = objectValue(strategy.event), eventStart = parseEventStart(event.event_id);
-  const eventCurrent = !!eventStart && now >= eventStart && now < eventStart + 300_000;
-  const market = eventCurrent ? (snapshot?.markets ?? []).find(row => textValue(row.event_id) === textValue(event.event_id)) ?? null : null;
-  const next = useMemo(() => (snapshot?.markets ?? []).map(row => ({ start: parseEventStart(row.event_id) })).filter(x => x.start !== null && x.start > now).sort((a, b) => (a.start ?? 0) - (b.start ?? 0))[0] ?? null, [snapshot?.markets, now]);
-  const available = numberValue(account.balance_usd ?? account.available_balance_usd ?? account.balance), publicValue = numberValue(account.public_positions_value);
-  const shares = position ? numberValue(position.remaining_shares_text) : null, sellable = position ? numberValue(position.sellable_shares_text) : null;
-  const acquired = position ? numberValue(position.acquired_shares_text) : null, cost = position ? numberValue(position.cost_all_in_text) : null;
-  const bid = position ? quote(books, position.token_id, "best_bid") : null;
-  const currentValue = sellable !== null && bid !== null ? sellable * bid : null;
-  const remainingCost = cost !== null && shares !== null && acquired && acquired > 0 ? cost * shares / acquired : null;
-  const unrealized = currentValue !== null && remainingCost !== null ? currentValue - remainingCost : null;
-  const marketConnected = textValue(marketWs.status) === "CONNECTED" && !boolValue(marketWs.stale);
-  const userConnected = textValue(userWs.status) === "CONNECTED" && !boolValue(userWs.stale);
-  const reconReady = textValue(strategy.reconciliation_readiness) === "READY";
-  const alerts = Array.isArray(health.alerts) ? health.alerts.map(objectValue) : [];
-  const healthy = state === "ready" && status.tone === "good" && marketConnected && reconReady;
+  const root = objectValue(snapshot?.overview.data), account = objectValue(root.account), pnl = objectValue(root.pnl), cumulative = objectValue(root.pnl_cumulative);
+  const positions = objectValue(root.positions), orders = objectValue(root.orders), markets = objectValue(root.markets), health = objectValue(root.health);
+  const activity = arrayValue(objectValue(root.activity).items), alerts = arrayValue(objectValue(root.alerts).items);
+  const current = objectValue(markets.current), next = objectValue(markets.next);
+  const positionItems = arrayValue(positions.items), orderItems = arrayValue(orders.items);
+  const infra = objectValue(snapshot?.infrastructure.data), disk = objectValue(infra.disk), ram = objectValue(infra.ram), cpu = objectValue(infra.cpu), database = objectValue(infra.database), uptime = objectValue(infra.uptime), services = objectValue(infra.services);
+  const timeseries = arrayValue(objectValue(snapshot?.timeseries.data).items), tradeData = objectValue(snapshot?.trades.data), trades = arrayValue(tradeData.items);
+  const csrf = textValue(objectValue(snapshot?.session.data).csrf_token);
+  const total = metricValue(account.total_equity);
+  const traderStopped = textValue(health.trader_service) === "STOPPED", kill = boolValue(health.kill_switch), paused = boolValue(health.pause_entries);
+  const pageCount = Math.max(1, Math.ceil((numberValue(tradeData.total) ?? 0) / query.pageSize));
+  const statusOk = state === "ready" && kill && paused && traderStopped;
+  const refreshAge = snapshot ? Math.max(0, (now - snapshot.receivedAt) / 1000) : null;
+  const selectedRange = query.range;
+  const setRange = (range: DashboardQuery["range"]) => setQuery(value => ({ ...value, range, page: 1 }));
+  const doLogout = async () => { try { await logout(csrf); window.location.assign("/live/login?next=/live-status/"); } catch (reason) { setError(reason instanceof Error ? reason.message : "ההתנתקות נכשלה"); setState("error"); } };
 
   return <main dir="rtl">
-    <header className="topbar">
-      <div className="brand"><div className="brand-mark">P</div><div><b>Polymarket Robot</b><small>תצוגת LIVE מאומתת</small></div></div>
-      <div className="top-statuses"><span className="top-chip"><Dot tone={state === "ready" ? status.tone : "muted"}/><b>{state === "ready" ? status.label : "אין נתונים"}</b></span><span className="top-chip"><Dot tone={marketConnected ? "good" : "danger"}/>Market WS {marketConnected ? "מחובר" : "לא תקין"}</span><span className="top-chip data-age">נתון אחרון: <b>{freshnessLabel(marketWs.last_message_at, now)}</b></span><span className="server-clock"><b>{new Date(textValue(health.time) || now).toLocaleTimeString("en-GB", { hour12: false, timeZone: TZ })}</b><small>Asia/Jerusalem</small></span></div>
-      <button className="button danger-outline" disabled title="פעולות שליטה אינן מחוברות">שליטה מושבתת</button>
-    </header>
+    <header className="topbar"><div className="brand"><div className="brand-mark">P</div><div><b>Polymarket Robot</b><small>LIVE · READ ONLY</small></div></div><div className="top-statuses"><span className="top-chip"><Dot tone={statusOk ? "good" : "warn"}/><b>{traderStopped ? "המסחר כבוי" : "שירות מסחר פעיל"}</b></span><span className="top-chip"><Dot tone={tone(textValue(health.market_websocket))}/><span>Market WS {textValue(health.market_websocket) || "UNKNOWN"}</span></span><span className="top-chip data-age">רענון: <b>{refreshAge === null ? "—" : secondsLabel(refreshAge)}</b></span><span className="server-clock"><b>{new Date(now).toLocaleTimeString("en-GB", { timeZone: TZ, hour12: false })}</b><small>Asia/Jerusalem</small></span></div><button className="button secondary" disabled={!csrf} onClick={() => void doLogout()}>התנתקות</button></header>
     <div className="page-shell">
-      <div className="page-title"><div><p className="eyebrow">LIVE · READ ONLY</p><h1>מרכז מצב מסחר</h1><p>נתוני ייצור בלבד; ללא Mock וללא פעולות מסחר מהדפדפן.</p></div><div className={`system-ok ${healthy ? "" : "not-ok"}`}><Dot tone={healthy ? "good" : "warn"}/><span><b>{healthy ? "המערכת מדווחת READY" : "נדרשת תשומת לב"}</b><small>{healthy ? "שוק ו-Reconciliation תקינים" : "בדוק את החיבור והמדדים"}</small></span></div></div>
-      {state === "auth" && <div className="auth-banner"><div><b>הנתונים מוגנים ודורשים התחברות</b><span>אף נתון תפעולי לא נטען ללא session מורשה.</span></div><a className="button primary" href="/live/login">התחברות ל-LIVE</a></div>}
-      {state === "error" && <div className="alert-banner danger-banner"><div className="alert-icon">!</div><div><b>לא ניתן לרענן</b><span>{error}. נתונים קודמים מסומנים לפי גילם.</span></div></div>}
-      {state === "loading" && <div className="loading-banner">טוען נתוני LIVE…</div>}
-      {state === "ready" && (alerts.length ? <div className="alert-banner"><div className="alert-icon">!</div><div><b>{textValue(alerts[0].severity) || "התראה"}</b><span>{textValue(alerts[0].message) || textValue(alerts[0].reason_code)}</span></div></div> : <div className="all-good"><Dot/><b>אין התראות פעילות</b></div>)}
+      <div className="page-title"><div><p className="eyebrow">PRODUCTION DATA · CUTOVER {textValue(snapshot?.overview.meta.cutover_at) || "UNAVAILABLE"}</p><h1>מרכז מצב מסחר</h1><p>מקור יחיד: Dashboard API v1. אין fallback ל־Mock ואין פעולות מסחר.</p></div><div className={`system-ok ${statusOk ? "" : "not-ok"}`}><Dot tone={statusOk ? "good" : "warn"}/><span><b>{statusOk ? "מצב תחזוקה בטוח" : "נדרשת תשומת לב"}</b><small>Trader {textValue(health.trader_service) || "UNKNOWN"} · Kill Switch {kill ? "ON" : "OFF"}</small></span></div></div>
+      {state === "loading" && <div className="loading-banner">טוען נתוני LIVE מאומתים…</div>}
+      {state === "auth" && <div className="auth-banner"><div><b>ה־session אינו בתוקף</b><span>לא הוצג מידע פיננסי ללא אימות.</span></div><a className="button primary" href="/live/login?next=/live-status/">התחברות</a></div>}
+      {state === "error" && <div className="alert-banner danger-banner"><div className="alert-icon">!</div><div><b>הרענון נכשל</b><span>{error}. אם מוצגים נתונים קודמים, גילם נשמר ולא אופס.</span></div></div>}
+      {state === "ready" && (alerts.length ? <div className="alert-banner"><div className="alert-icon">!</div><div><b>{textValue(alerts[0].severity) || "התראה פעילה"}</b><span>{textValue(alerts[0].message) || textValue(alerts[0].reason_code)}</span></div></div> : <div className="all-good"><Dot/><b>אין התראות פעילות במקור</b></div>)}
 
       <div className="overview-grid">
-        <Card><div className="card-head"><span>יתרה זמינה</span><span className="live-badge">LIVE · snapshot</span></div>{available !== null ? <><div className="money">{usd.format(available)}</div><div className="source-note">נמדד {freshnessLabel(account.sampled_at ?? account.updated_at, now)}</div></> : <NA reason="Snapshot החשבון אינו כולל יתרה זמינה מאומתת." compact/>}<div className="metric-list"><Metric label="שווי פוזיציות ציבורי" value={publicValue === null ? "לא זמין" : usd.format(publicValue)} note="לא valuation שמרני"/><Metric label="שווי כולל" value="לא זמין" note="reserved balance לא מוגדר"/></div></Card>
-        <Card className="event-card"><div className="card-head"><span>אירוע נוכחי</span><span className="soft-badge">{eventCurrent && eventStart ? `${localTime(eventStart)}–${localTime(eventStart + 300_000)}` : "לא זמין"}</span></div>{eventCurrent && market ? <><h2>Bitcoin Up or Down · 5 Minutes</h2><div className="event-market"><div><span>YES bid / ask</span><b className="positive">{quote(books, market.yes_token_id, "best_bid") === null || quote(books, market.yes_token_id, "best_ask") === null ? "—" : `${num.format(quote(books, market.yes_token_id, "best_bid")!)} / ${num.format(quote(books, market.yes_token_id, "best_ask")!)}`}</b></div><div><span>NO bid / ask</span><b>{quote(books, market.no_token_id, "best_bid") === null || quote(books, market.no_token_id, "best_ask") === null ? "—" : `${num.format(quote(books, market.no_token_id, "best_bid")!)} / ${num.format(quote(books, market.no_token_id, "best_ask")!)}`}</b></div><div className="countdown"><span>נותר</span><b>{countdown((eventStart ?? 0) + 300_000, now)}</b></div></div><div className="strategy-line"><Dot tone={textValue(strategy.readiness) === "READY" ? "good" : "warn"}/><span><b>{textValue(event.status) || "מצב לא ידוע"}</b><small>{textValue(event.lock_reason) || textValue(strategy.block_reason) || "ללא סיבת חסימה"}</small></span></div></> : <NA reason="אין API מצומצם ובטוח שממפה את האירוע הפעיל למחירי YES/NO; endpoint השוק הגולמי אינו נטען לדפדפן." compact/>}</Card>
-        <Card><div className="card-head"><span>פוזיציה פתוחה</span><span className="quality-badge">LIVE</span></div>{position ? <><div className="position-lead"><span className="yes-pill">{textValue(position.outcome) || "—"}</span><div><small>P&amp;L לא ממומש</small><b className={unrealized === null ? "" : unrealized >= 0 ? "positive" : "negative"}>{unrealized === null ? "לא זמין" : `${unrealized >= 0 ? "+" : ""}${usd.format(unrealized)}`}</b></div></div><div className="mini-grid"><Metric label="מחיר כניסה" value={numberValue(position.average_entry_price_text) === null ? "—" : num.format(numberValue(position.average_entry_price_text)!)}/><Metric label="shares נותרו" value={shares === null ? "—" : num.format(shares)}/><Metric label="עלות all-in מיוחסת" value={remainingCost === null ? "—" : usd.format(remainingCost)}/><Metric label="שווי לפי best bid" value={currentValue === null ? "—" : usd.format(currentValue)}/></div><div className="order-row"><span>best bid</span><b>{bid === null ? "לא זמין" : num.format(bid)}</b></div></> : <div className="empty-state"><div className="empty-circle">—</div><b>אין פוזיציה פתוחה</b><span>לפי active_positions במקור הפעיל</span></div>}</Card>
-        <Card><div className="card-head"><span>האירוע הבא</span><span className="soft-badge">{next?.start ? localTime(next.start) : "לא זמין"}</span></div>{next?.start ? <><div className="next-time"><small>נפתח בעוד</small><b>{countdown(next.start, now)}</b></div><div className="eligibility"><Dot tone={textValue(strategy.readiness) === "READY" ? "good" : "warn"}/><div><b>{textValue(strategy.readiness) === "READY" ? "המערכת מוכנה" : "המערכת אינה READY"}</b><span>{textValue(strategy.block_reason) || "זכאות סופית נקבעת בזמן אמת"}</span></div></div></> : <NA reason="לא נמצא market עתידי ב-100 הרשומות האחרונות." compact/>}<div className="next-rule"><span>LIVE submission</span><b>{boolValue(config.live_order_submission_enabled) ? "מופעל בשרת" : "כבוי בשרת"}</b></div></Card>
+        <Card><div className="card-head"><span>חשבון ו־Equity</span><Badge quality={total.quality}/></div><div className="money">{displayMetric(total)}</div><QualityMetric label="מזומן זמין" raw={account.cash}/><QualityMetric label="שווי פוזיציות שמרני" raw={account.positions}/><QualityMetric label="שמור בפקודות" raw={account.reserved}/><QualityMetric label="Claimable" raw={account.claimable}/></Card>
+        <Card className="event-card"><div className="card-head"><span>אירוע נוכחי</span><Badge quality={qualityValue(current.quality)}/></div>{current.event_id ? <><h2>Bitcoin Up or Down · 5 Minutes</h2><div className="event-market"><div><span>YES bid / ask</span><b>{money(objectValue(current.yes).best_bid).replace("$", "")} / {money(objectValue(current.yes).best_ask).replace("$", "")}</b></div><div><span>NO bid / ask</span><b>{money(objectValue(current.no).best_bid).replace("$", "")} / {money(objectValue(current.no).best_ask).replace("$", "")}</b></div><div className="countdown"><span>נותר</span><b>{countdown(current.ends_at, now)}</b></div></div><div className="strategy-line"><Dot tone={boolValue(current.stale) ? "warn" : "good"}/><span><b>{boolValue(current.accepting_orders) ? "מקבל פקודות" : "אינו מקבל פקודות"}</b><small>as of {dateTime(current.as_of)}</small></span></div></> : <Empty reason="אין אירוע נוכחי במקור המצומצם."/>}</Card>
+        <Card><div className="card-head"><span>פוזיציות פתוחות</span><Badge quality={qualityValue(positions.quality)}/></div>{positionItems.length ? <div className="position-list">{positionItems.map((row, index) => <div className="position-item" key={`${textValue(row.position_id)}-${index}`}><div className="position-lead"><span className="yes-pill">{textValue(row.outcome) || "—"}</span><div><small>P&amp;L לא ממומש</small><b className={(numberValue(row.unrealized_pnl_usd) ?? 0) >= 0 ? "positive" : "negative"}>{money(row.unrealized_pnl_usd)}</b></div></div><Metric label="מצב" value={textValue(row.state)}/><Metric label="Shares ניתנים למכירה" value={num.format(numberValue(row.sellable_shares) ?? 0)}/><Metric label="Best bid" value={numberValue(row.best_bid) === null ? "—" : num.format(numberValue(row.best_bid)!)}/><Metric label="עלות מיוחסת" value={money(row.remaining_attributed_cost_usd)}/><Badge quality={qualityValue(row.quality)}/></div>)}</div> : <Empty quality={qualityValue(positions.quality)} reason={textValue(positions.reason) || "אין פוזיציות LIVE מאומתות לאחר cutover."}/>}</Card>
+        <Card><div className="card-head"><span>האירוע הבא</span><Badge quality={qualityValue(next.quality)}/></div>{next.event_id ? <><div className="next-time"><small>נפתח בעוד</small><b>{countdown(next.starts_at, now)}</b></div><Metric label="פתיחה" value={dateTime(next.starts_at)}/><Metric label="YES bid" value={numberValue(objectValue(next.yes).best_bid) === null ? "—" : num.format(numberValue(objectValue(next.yes).best_bid)!)}/><Metric label="NO bid" value={numberValue(objectValue(next.no).best_bid) === null ? "—" : num.format(numberValue(objectValue(next.no).best_bid)!)}/></> : <Empty reason="אין אירוע עתידי זמין."/>}</Card>
       </div>
 
       <div className="content-grid">
-        <Card className="balance-section"><div className="section-head"><div><h2>ביצועי הארנק</h2><p>יתרה, רווח מצטבר ו-P&amp;L לפי אירוע</p></div><div className="controls"><div className="segmented"><button disabled>יתרת ארנק</button><button disabled>רווח מצטבר</button><button disabled>לכל אירוע</button></div><select disabled><option>היום</option><option>אתמול</option><option>3 ימים</option><option>7 ימים</option><option>טווח מותאם</option></select></div></div><NA reason="אין מקור היסטורי שמוכיח LIVE בלבד. רשומות ותיקות ללא provenance אינן מוצגות ואינן מחושבות."/></Card>
-        <Card className="control-card"><div className="section-head"><div><h2>שליטה במכונה</h2><p>מופרדת בכוונה מתצוגת הנתונים</p></div><span className={`state-pill ${status.tone}`}><Dot tone={status.tone}/>{status.label}</span></div><div className="readonly-callout"><b>קריאה בלבד</b><span>אין בדף endpoint פקודה, token מפעיל או טיפול ב-CSRF.</span></div><div className="control-actions disabled-actions"><button disabled>הפסק כניסות<small>נפרד מהשבתת מסחר</small></button><button disabled>השבת מסחר<small>אינו עוצר systemd</small></button><button disabled>בטל פקודות<small>אינו סוגר פוזיציות</small></button><button disabled>סגור פוזיציות<small>דורש אישור נפרד</small></button><button disabled>עצור שירות<small>לא מחובר</small></button><button className="emergency" disabled>Kill Switch<small>לא זמין כאן</small></button></div></Card>
-        <Card className="activity-card"><div className="section-head"><div><h2>פעילות מסחר</h2><p>מדדים היסטוריים מוכחי LIVE בלבד</p></div></div><NA reason="עסקאות, win rate, רווח נקי ועמלות חסרים עד להפרדה אמינה בין LIVE ל-DEMO/PAPER."/><div className="stats-grid unavailable-stats">{["סך עסקאות","רווחיות","הפסדיות","אחוז הצלחה","רווח ממוצע","הפסד ממוצע","רווח נקי","עמלות"].map(label => <Metric key={label} label={label} value="—"/>)}</div></Card>
-        <Card className="log-card"><div className="section-head"><div><h2>יומן פעילות חי</h2><p>ללא IDs, כתובות או payload גולמי</p></div><span className="quality-badge">7 אחרונים</span></div>{snapshot?.logs.length ? <div className="log-list">{snapshot.logs.map((log, i) => { const sev = textValue(log.severity).toUpperCase(); const tone = ["ERROR","CRITICAL"].includes(sev) ? "error" : ["WARN","WARNING"].includes(sev) ? "warning" : "info"; return <div className={`log-row ${tone}`} key={`${textValue(log.occurred_at)}-${i}`}><time>{localTime(log.occurred_at)}</time><i/><div><b>{safeLog(log)}</b><code>{textValue(log.category)} · {textValue(log.result_status)}</code></div></div>; })}</div> : <NA reason="אין רשומות זמינות או שנדרשת התחברות." compact/>}</Card>
+        <Card className="balance-section"><div className="section-head"><div><h2>Equity ו־P&amp;L לאורך זמן</h2><p>Lifecycle מאומת, מקובץ לפי יום ב־Asia/Jerusalem</p></div><div className="controls"><select aria-label="טווח" value={selectedRange} onChange={event => setRange(event.target.value as DashboardQuery["range"])}><option value="today">היום</option><option value="yesterday">אתמול</option><option value="3d">3 ימים</option><option value="7d">7 ימים</option><option value="30d">30 ימים</option><option value="custom">טווח מותאם</option></select>{selectedRange === "custom" && <><input aria-label="מתאריך" type="date" value={query.from || ""} onChange={event => setQuery(value => ({ ...value, from: event.target.value, page: 1 }))}/><input aria-label="עד תאריך" type="date" value={query.to || ""} onChange={event => setQuery(value => ({ ...value, to: event.target.value, page: 1 }))}/></>}</div></div><TrendChart rows={timeseries}/><div className="stats-grid"><Metric label="P&L ממומש בטווח" value={money(pnl.realized_pnl_usd)}/><Metric label="P&L מצטבר" value={money(cumulative.realized_pnl_usd)}/><Metric label="P&L לא ממומש" value={positionItems.length && positionItems.every(row => numberValue(row.unrealized_pnl_usd) !== null) ? money(positionItems.reduce((sum, row) => sum + numberValue(row.unrealized_pnl_usd)!, 0)) : "—"}/><Metric label="עמלות" value={numberValue(pnl.fees_usd) === null ? "—" : money(pnl.fees_usd)} note={textValue(pnl.quality)}/></div></Card>
+        <Card className="control-card"><div className="section-head"><div><h2>שליטה במכונה</h2><p>מוצג לצורך הבחנה בלבד</p></div><span className="state-pill warn"><Dot tone="warn"/>READ ONLY</span></div><div className="readonly-callout"><b>אין Command API בדאשבורד</b><span>כל הכפתורים disabled ואינם משנים local state.</span></div><div className="control-actions disabled-actions"><button disabled>הפסק כניסות<small>Pause entries</small></button><button disabled>השבת מסחר<small>שונה מ־Kill Switch</small></button><button disabled>בטל פקודות<small>אינו סוגר פוזיציות</small></button><button disabled>סגור פוזיציות<small>לא מחובר</small></button><button disabled>עצור שירות<small>systemd אינו נגיש</small></button><button className="emergency" disabled>Kill Switch<small>מצב שרת: {kill ? "פעיל" : "לא פעיל"}</small></button></div></Card>
+        <Card className="activity-card"><div className="section-head"><div><h2>פעילות מסחר</h2><p>Round-trip / lifecycle מאומת, לא מספר orders</p></div><Badge quality={qualityValue(pnl.quality)}/></div><div className="stats-grid"><Metric label="עסקאות" value={numberValue(pnl.trade_count) === null ? "—" : String(pnl.trade_count)}/><Metric label="רווחיות" value={numberValue(pnl.wins) === null ? "—" : String(pnl.wins)}/><Metric label="הפסדיות" value={numberValue(pnl.losses) === null ? "—" : String(pnl.losses)}/><Metric label="אחוז הצלחה" value={numberValue(pnl.win_rate_percent) === null ? "—" : `${num.format(numberValue(pnl.win_rate_percent)!)}%`}/><Metric label="רווח ממוצע" value={money(pnl.average_win_usd)}/><Metric label="הפסד ממוצע" value={money(pnl.average_loss_usd)}/><Metric label="Profit factor" value={numberValue(pnl.profit_factor) === null ? "—" : num.format(numberValue(pnl.profit_factor)!)}/><Metric label="עמלות מאומתות" value={numberValue(pnl.fees_usd) === null ? "—" : money(pnl.fees_usd)}/></div><div className="daily-bars">{timeseries.map(row => <div key={textValue(row.day)}><span>{textValue(row.day).slice(5)}</span><b className={(numberValue(row.realized_pnl_usd) ?? 0) >= 0 ? "positive" : "negative"}>{money(row.realized_pnl_usd)}</b><small>{textValue(row.trades)} עסקאות</small></div>)}</div></Card>
+        <Card className="log-card"><div className="section-head"><div><h2>פעילות אחרונה</h2><p>ללא IDs או payload גולמי</p></div><Badge quality={qualityValue(objectValue(root.activity).quality)}/></div>{activity.length ? <div className="log-list">{activity.map((row, index) => <div className={`log-row ${textValue(row.severity).toLowerCase()}`} key={`${textValue(row.occurred_at)}-${index}`}><time>{dateTime(row.occurred_at)}</time><i/><div><b>{textValue(row.action) || textValue(row.reason) || textValue(row.category)}</b><code>{textValue(row.component)} · {textValue(row.result)}</code></div></div>)}</div> : <Empty reason="אין אירועי activity מאומתים לאחר cutover."/>}</Card>
       </div>
 
-      <Card className="health-card"><div className="section-head"><div><h2>בריאות המערכת</h2><p>מדדים מהשירות הפעיל</p></div><span className={`state-pill ${healthy ? "good" : "warn"}`}><Dot tone={healthy ? "good" : "warn"}/>{healthy ? "תקין" : "בדיקה נדרשת"}</span></div><div className="health-grid"><Metric label="מסד נתונים" value={formatBytes(objectValue(envelope.database).size_bytes)} note="גודל קובץ"/><Metric label="Market WS" value={textValue(marketWs.status) || "לא זמין"} tone={marketConnected ? "positive" : "negative"}/><Metric label="User WS" value={textValue(userWs.status) || "לא זמין"} tone={userConnected ? "positive" : "negative"}/><Metric label="Reconciliation" value={textValue(strategy.reconciliation_readiness) || "לא זמין"} tone={reconReady ? "positive" : "negative"}/><Metric label="Robot readiness" value={textValue(strategy.readiness) || "לא זמין"}/><Metric label="Pause entries" value={boolValue(strategy.pause_entries) ? "פעיל" : "לא פעיל"}/><Metric label="Kill Switch" value={boolValue(health.kill_switch_active) ? "פעיל" : "לא פעיל"}/><Metric label="עדכון אחרון" value={freshnessLabel(marketWs.last_message_at, now)}/></div><div className="missing-infra">CPU, RAM, disk filesystem, process uptime ו-latency אינם נחשפים ב-API הקיים ולכן אינם מוצגים.</div></Card>
-      <footer>Polymarket Robot · LIVE · READ ONLY · Asia/Jerusalem · מחירים 0–1 · USD</footer>
+      <Card className="table-card"><div className="section-head"><div><h2>היסטוריית עסקאות</h2><p>pagination בצד השרת; מזהים ממוסכים</p></div><Badge quality={qualityValue(tradeData.quality)}/></div>{trades.length ? <div className="table-scroll"><table><thead><tr><th>פתיחה</th><th>סגירה</th><th>צד</th><th>מצב</th><th>P&amp;L</th><th>עמלה</th><th>איכות</th></tr></thead><tbody>{trades.map((row, index) => <tr key={`${textValue(row.deal_id)}-${index}`}><td>{dateTime(row.opened_at)}</td><td>{dateTime(row.closed_at)}</td><td>{textValue(row.outcome)}</td><td>{textValue(row.state)}</td><td>{money(row.realized_pnl_usd)}</td><td>{numberValue(row.fees_usd) === null ? "—" : money(row.fees_usd)}</td><td><Badge quality={qualityValue(row.quality)}/></td></tr>)}</tbody></table></div> : <Empty reason="אין עסקאות מאומתות בטווח שנבחר."/>}<div className="pagination"><button disabled={query.page <= 1} onClick={() => setQuery(value => ({ ...value, page: value.page - 1 }))}>הקודם</button><span>עמוד {query.page} מתוך {pageCount}</span><button disabled={query.page >= pageCount} onClick={() => setQuery(value => ({ ...value, page: value.page + 1 }))}>הבא</button></div></Card>
+
+      <div className="tables-grid"><Card><div className="section-head"><div><h2>פקודות פתוחות</h2><p>Intent מאומת עם remote ID ממוסך</p></div><Badge quality={qualityValue(orders.quality)}/></div>{orderItems.length ? <div className="table-scroll"><table><thead><tr><th>צד</th><th>פעולה</th><th>מצב</th><th>מולאו</th><th>מחיר</th></tr></thead><tbody>{orderItems.map((row, index) => <tr key={`${textValue(row.intent_id)}-${index}`}><td>{textValue(row.side)}</td><td>{textValue(row.purpose)}</td><td>{textValue(row.state)}</td><td>{textValue(row.filled_shares)}</td><td>{textValue(row.limit_price)}</td></tr>)}</tbody></table></div> : <Empty reason="Reconciliation מאומת מוכיח שאין פקודות פתוחות, או שאין נתון זמין."/>}</Card><Card><div className="section-head"><div><h2>מצבי בטיחות</h2><p>הפרדה מפורשת בין מנגנוני העצירה</p></div></div><Metric label="Trader service" value={textValue(health.trader_service) || "UNKNOWN"}/><Metric label="Pause entries" value={paused ? "פעיל" : "לא פעיל"}/><Metric label="Kill Switch" value={kill ? "פעיל" : "לא פעיל"}/><Metric label="Readiness" value={textValue(health.strategy_readiness) || "UNKNOWN"}/><Metric label="Reconciliation" value={textValue(health.reconciliation_readiness) || "UNKNOWN"}/><Metric label="Order heartbeat" value={textValue(health.order_heartbeat) || "UNKNOWN"}/><Metric label="User WebSocket" value={textValue(health.user_websocket) || "UNKNOWN"}/></Card></div>
+
+      <Card className="health-card"><div className="section-head"><div><h2>בריאות ותשתית</h2><p>דגימה cached ל־15 שניות; dashboard read-only</p></div><Badge quality={qualityValue(health.quality)}/></div><div className="health-grid"><div className="storage"><div><span>Disk</span><b>{bytes(disk.used_bytes)} / {bytes(disk.total_bytes)}</b></div><div className="progress"><i style={{ width: `${numberValue(disk.used_percent) ?? 0}%` }}/></div><small>{bytes(disk.free_bytes)} פנוי · {textValue(disk.used_percent)}%</small></div><Metric label="DB size" value={bytes(database.size_bytes)}/><Metric label="CPU" value={numberValue(cpu.used_percent) === null ? "—" : `${cpu.used_percent}%`}/><Metric label="RAM" value={`${bytes(ram.used_bytes)} / ${bytes(ram.total_bytes)}`}/><Metric label="Host uptime" value={secondsLabel(uptime.host_seconds)}/><Metric label="Dashboard uptime" value={secondsLabel(uptime.dashboard_process_seconds)}/><Metric label="Dashboard service" value={textValue(objectValue(services.dashboard).state) || "UNKNOWN"}/><Metric label="Restart count" value={textValue(objectValue(services.dashboard).restart_count) || "0"}/></div><div className="freshness-row"><span>זמן שרת: {dateTime(snapshot?.overview.meta.as_of)}</span><span>Reconciliation אחרון: {dateTime(health.last_reconciliation)}</span><span>API {textValue(snapshot?.overview.meta.api_version)} · {textValue(snapshot?.overview.meta.environment)} / {textValue(snapshot?.overview.meta.execution_mode)}</span></div></Card>
+      <footer>Polymarket Robot · LIVE READ ONLY · Asia/Jerusalem · USD · מחירי חוזים 0–1</footer>
     </div>
   </main>;
 }
