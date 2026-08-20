@@ -2,18 +2,28 @@ export type JsonRecord = Record<string, unknown>;
 export type Quality = "REAL" | "UNAVAILABLE" | "STALE" | "PARTIAL" | "ESTIMATED" | "ERROR";
 export type MetricValue = { value: number | string | boolean | null; quality: Quality; unit?: string | null; as_of?: string | null; source?: string; verified?: boolean; stale?: boolean; reason?: string | null };
 export type Envelope<T extends JsonRecord = JsonRecord> = { meta: { as_of: string; timezone: string; environment: string; execution_mode: string; cutover_at: string | null; source: string; verified: boolean; api_version: string }; data: T };
+export type DashboardEndpoint = "overview" | "timeseries" | "trades" | "infrastructure" | "session";
+export type DashboardSection = {
+  data: Envelope | null;
+  loading: boolean;
+  error: string | null;
+  lastSuccessAt: number | null;
+  lastAttemptAt: number | null;
+};
+export type DashboardSections = Record<DashboardEndpoint, DashboardSection>;
 export type DashboardSnapshot = {
-  overview: Envelope;
-  timeseries: Envelope;
-  trades: Envelope;
-  infrastructure: Envelope;
-  session: Envelope;
+  overview: Envelope | null;
+  timeseries: Envelope | null;
+  trades: Envelope | null;
+  infrastructure: Envelope | null;
+  session: Envelope | null;
+  sections: DashboardSections;
   receivedAt: number;
 };
 export type DashboardQuery = { range: "today" | "yesterday" | "3d" | "7d" | "30d" | "custom"; from?: string; to?: string; page: number; pageSize: number };
 export const PRODUCTION_DATA_SOURCE = "/live/dashboard/v1/" as const;
 export class AuthenticationRequiredError extends Error {}
-export class DashboardRequestError extends Error { constructor(message: string, public status: number) { super(message); } }
+export class DashboardRequestError extends Error { status: number; constructor(message: string, status: number) { super(message); this.status = status; } }
 
 const params = (query: DashboardQuery, includePage = false) => {
   const value = new URLSearchParams({ range: query.range });
@@ -32,17 +42,43 @@ async function get<T extends JsonRecord>(path: string, signal: AbortSignal): Pro
   }
   return body as Envelope<T>;
 }
-export async function fetchDashboardSnapshot(query: DashboardQuery, signal: AbortSignal): Promise<DashboardSnapshot> {
+const endpointError = (reason: unknown): string => reason instanceof Error ? reason.message : "בקשת Dashboard נכשלה";
+const previousSection = (previous: DashboardSnapshot | null, endpoint: DashboardEndpoint): DashboardSection => previous?.sections[endpoint] ?? { data: previous?.[endpoint] ?? null, loading: false, error: null, lastSuccessAt: previous?.receivedAt ?? null, lastAttemptAt: null };
+
+export async function fetchDashboardSnapshot(query: DashboardQuery, signal: AbortSignal, previous: DashboardSnapshot | null = null): Promise<DashboardSnapshot> {
   const root = PRODUCTION_DATA_SOURCE;
-  const [overview, timeseries, trades, infrastructure, session] = await Promise.all([
-    get(`${root}overview?${params(query)}`, signal),
-    get(`${root}pnl/timeseries?${params(query)}`, signal),
-    get(`${root}trades?${params(query, true)}`, signal),
-    get(`${root}infrastructure`, signal),
-    get(`${root}session`, signal),
-  ]);
-  return { overview, timeseries, trades, infrastructure, session, receivedAt: Date.now() };
+  const attemptedAt = Date.now();
+  const endpoints: Array<[DashboardEndpoint, Promise<Envelope>]> = [
+    ["overview", get(`${root}overview?${params(query)}`, signal)],
+    ["timeseries", get(`${root}pnl/timeseries?${params(query)}`, signal)],
+    ["trades", get(`${root}trades?${params(query, true)}`, signal)],
+    ["infrastructure", get(`${root}infrastructure`, signal)],
+    ["session", get(`${root}session`, signal)],
+  ];
+  const results = await Promise.allSettled(endpoints.map(([, request]) => request));
+  const authFailure = results.find(result => result.status === "rejected" && result.reason instanceof AuthenticationRequiredError);
+  if (authFailure?.status === "rejected") throw authFailure.reason;
+
+  const sections = {} as DashboardSections;
+  endpoints.forEach(([endpoint], index) => {
+    const result = results[index];
+    const prior = previousSection(previous, endpoint);
+    sections[endpoint] = result.status === "fulfilled"
+      ? { data: result.value, loading: false, error: null, lastSuccessAt: attemptedAt, lastAttemptAt: attemptedAt }
+      : { ...prior, loading: false, error: endpointError(result.reason), lastAttemptAt: attemptedAt };
+  });
+  const successes = Object.values(sections).map(section => section.lastSuccessAt).filter((value): value is number => value !== null);
+  return {
+    overview: sections.overview.data,
+    timeseries: sections.timeseries.data,
+    trades: sections.trades.data,
+    infrastructure: sections.infrastructure.data,
+    session: sections.session.data,
+    sections,
+    receivedAt: successes.length ? Math.max(...successes) : previous?.receivedAt ?? attemptedAt,
+  };
 }
+
 export async function logout(csrfToken: string): Promise<void> {
   const response = await fetch("/live/logout", { method: "POST", credentials: "same-origin", cache: "no-store", headers: { "X-Live-CSRF-Token": csrfToken } });
   if (!response.ok) throw new DashboardRequestError("ההתנתקות נכשלה", response.status);
