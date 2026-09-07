@@ -2,7 +2,7 @@ export type JsonRecord = Record<string, unknown>;
 export type Quality = "REAL" | "UNAVAILABLE" | "STALE" | "PARTIAL" | "ESTIMATED" | "ERROR";
 export type MetricValue = { value: number | string | boolean | null; quality: Quality; unit?: string | null; as_of?: string | null; source?: string; verified?: boolean; stale?: boolean; reason?: string | null };
 export type Envelope<T extends JsonRecord = JsonRecord> = { meta: { as_of: string; timezone: string; environment: string; execution_mode: string; cutover_at: string | null; source: string; verified: boolean; api_version: string }; data: T };
-export type DashboardEndpoint = "overview" | "timeseries" | "trades" | "infrastructure" | "session";
+export type DashboardEndpoint = "overview" | "trades" | "infrastructure" | "session" | "externalDeals" | "externalSummary";
 export type DashboardSection = {
   data: Envelope | null;
   loading: boolean;
@@ -13,10 +13,11 @@ export type DashboardSection = {
 export type DashboardSections = Record<DashboardEndpoint, DashboardSection>;
 export type DashboardSnapshot = {
   overview: Envelope | null;
-  timeseries: Envelope | null;
   trades: Envelope | null;
   infrastructure: Envelope | null;
   session: Envelope | null;
+  externalDeals: Envelope | null;
+  externalSummary: Envelope | null;
   sections: DashboardSections;
   receivedAt: number;
 };
@@ -50,10 +51,11 @@ export async function fetchDashboardSnapshot(query: DashboardQuery, signal: Abor
   const attemptedAt = Date.now();
   const endpoints: Array<[DashboardEndpoint, Promise<Envelope>]> = [
     ["overview", get(`${root}overview?${params(query)}`, signal)],
-    ["timeseries", get(`${root}pnl/timeseries?${params(query)}`, signal)],
     ["trades", get(`${root}trades?${params(query, true)}`, signal)],
     ["infrastructure", get(`${root}infrastructure`, signal)],
     ["session", get(`${root}session`, signal)],
+    ["externalDeals", get(`${root}external/deals?${params(query, true)}`, signal)],
+    ["externalSummary", get(`${root}external/summary?${params(query)}`, signal)],
   ];
   const results = await Promise.allSettled(endpoints.map(([, request]) => request));
   const authFailure = results.find(result => result.status === "rejected" && result.reason instanceof AuthenticationRequiredError);
@@ -70,13 +72,36 @@ export async function fetchDashboardSnapshot(query: DashboardQuery, signal: Abor
   const successes = Object.values(sections).map(section => section.lastSuccessAt).filter((value): value is number => value !== null);
   return {
     overview: sections.overview.data,
-    timeseries: sections.timeseries.data,
     trades: sections.trades.data,
     infrastructure: sections.infrastructure.data,
     session: sections.session.data,
+    externalDeals: sections.externalDeals.data,
+    externalSummary: sections.externalSummary.data,
     sections,
     receivedAt: successes.length ? Math.max(...successes) : previous?.receivedAt ?? attemptedAt,
   };
+}
+
+export async function fetchExportRecipients(signal?: AbortSignal): Promise<string[]> {
+  const response = await fetch(`${PRODUCTION_DATA_SOURCE}external/export/recipients`, { method: "GET", credentials: "same-origin", cache: "no-store", headers: { Accept: "application/json" }, signal });
+  if (response.status === 401 || response.status === 403) throw new AuthenticationRequiredError("נדרשת התחברות מחדש");
+  if (!response.ok) throw new DashboardRequestError("שליפת נמענים נכשלה", response.status);
+  const body = await response.json().catch(() => null);
+  const list = objectValue(objectValue(body).data).recipients;
+  return Array.isArray(list) ? list.map(value => String(value)) : [];
+}
+
+export async function requestTradeExport(recipient: string, csrfToken: string): Promise<void> {
+  const response = await fetch(`${PRODUCTION_DATA_SOURCE}external/export`, {
+    method: "POST", credentials: "same-origin", cache: "no-store",
+    headers: { "Content-Type": "application/json", "X-Live-CSRF-Token": csrfToken },
+    body: JSON.stringify({ recipient }),
+  });
+  if (response.status === 401 || response.status === 403) throw new AuthenticationRequiredError("נדרשת התחברות מחדש");
+  if (!response.ok) {
+    const body = await response.json().catch(() => null);
+    throw new DashboardRequestError(textValue(objectValue(objectValue(body).error).message) || `בקשת הייצוא נכשלה (${response.status})`, response.status);
+  }
 }
 
 export async function logout(csrfToken: string): Promise<void> {

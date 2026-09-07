@@ -15,9 +15,10 @@ test("production has one v1 data source and no mock fallback", () => {
 test("all explicit quality and lifecycle states are rendered", () => {
   for (const quality of qualities) assert.match(page + data, new RegExp(quality));
   for (const state of ["loading", "error", "auth", "ready"]) assert.match(page, new RegExp(`"${state}"`));
-  assert.match(page, /אין עסקאות מאומתות/);
-  assert.match(page, /פוזיציות פתוחות/);
-  assert.match(page, /PARTIAL/);
+  assert.match(page, /אין רשומות Polymarket/);
+  assert.match(page, /היסטוריית עסקאות/);
+  assert.match(page, /quality-\$\{quality\.toLowerCase\(\)\}/);
+  assert.match(page, /quality === "STALE"/);
 });
 
 test("polling is non-overlapping, abortable and slower when hidden", () => {
@@ -37,7 +38,7 @@ test("dashboard data requests are GET-only and commands remain disabled", () => 
 test("filters, custom dates, pagination, timeout and auth expiry UI exist", () => {
   for (const value of ["today", "yesterday", "3d", "7d", "custom"]) assert.match(page, new RegExp(`value="${value}"`));
   assert.match(page, /type="date"/);
-  assert.match(page, /עמוד \{query\.page\}/);
+  assert.match(page, /עמוד \{clampedTablePage\}/);
   assert.match(page, /setTimeout\(\(\) => active\?\.abort\(\), 8000\)/);
   assert.match(page, /ה־session אינו בתוקף/);
 });
