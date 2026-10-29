@@ -20,24 +20,29 @@ const ms = (value: unknown) => { const n = numberValue(value); return n === null
 const STATUS_LABEL: Record<string, string> = { HEALTHY: "תקין", DETECTION_DELAY: "איחור זיהוי", EXECUTION_DELAY: "איחור ביצוע", MARKET: "קפיצת שוק", LIQUIDITY: "נזילות", BOOK_FILL_MISMATCH: "פער ספר/מילוי", MIXED: "משולב", UNKNOWN: "לא ידוע" };
 // red = a robot/code problem to fix; green = fine; plain = market reality.
 const STATUS_TONE: Record<string, string> = { DETECTION_DELAY: "negative", EXECUTION_DELAY: "negative", BOOK_FILL_MISMATCH: "negative", HEALTHY: "positive" };
-const exitStatus = (row: JsonRecord) => {
+const NO_STATUS_KEY = "__none__";
+type DealStatus = { key: string; label: string; tone: string; title: string; suffix: string };
+// Shared by the "סטטוס" cell and its filter, so the filter choices are exactly
+// the labels a user actually sees in the column.
+const dealStatus = (row: JsonRecord): DealStatus => {
   const root = textValue(row.exit_root_cause);
-  if (!root) return "—";
+  if (!root) return { key: NO_STATUS_KEY, label: "—", tone: "", title: "", suffix: "" };
   const tech = textValue(row.exit_technical_behavior);
   const outcome = textValue(row.exit_analysis_outcome);
   const reconstructed = textValue(row.exit_evidence_quality).startsWith("RECONSTRUCTED");
-  let label: string;
-  let tone = "";
-  if (tech === "SETTLEMENT_WAIT") { label = "המתנה לסליקה"; tone = "positive"; }
-  else if (outcome === "NO_EXECUTION") { label = "לא בוצע"; tone = "negative"; }
-  else if (tech === "MIXED") { label = "משולב"; tone = STATUS_TONE[textValue(row.exit_primary_cause)] ?? ""; }
-  else { label = STATUS_LABEL[root] ?? root; tone = STATUS_TONE[root] ?? ""; }
+  let key: string, label: string, tone = "";
+  if (tech === "SETTLEMENT_WAIT") { key = "SETTLEMENT_WAIT"; label = "המתנה לסליקה"; tone = "positive"; }
+  else if (outcome === "NO_EXECUTION") { key = "NO_EXECUTION"; label = "לא בוצע"; tone = "negative"; }
+  else if (tech === "MIXED") { key = "MIXED"; label = "משולב"; tone = STATUS_TONE[textValue(row.exit_primary_cause)] ?? ""; }
+  else { key = root; label = STATUS_LABEL[root] ?? root; tone = STATUS_TONE[root] ?? ""; }
   const bidDrop = numberValue(row.stop_trigger_bid) !== null && numberValue(row.stop_submit_bid) !== null
     ? ` · bid ${num.format(numberValue(row.stop_trigger_bid)!)}→${num.format(numberValue(row.stop_submit_bid)!)}` : "";
   const vwapPair = numberValue(row.stop_expected_vwap) !== null && numberValue(row.stop_actual_vwap) !== null
     ? ` · VWAP צפוי ${num.format(numberValue(row.stop_expected_vwap)!)} בפועל ${num.format(numberValue(row.stop_actual_vwap)!)}` : "";
-  return <span className={tone} title={`${root}${row.exit_execution_ms != null ? ` · latch→submit ${ms(row.exit_execution_ms)}` : ""}${bidDrop}${vwapPair}${reconstructed ? " · שוחזר היסטורית" : ""}`}>{label}{reconstructed ? " ~" : ""}</span>;
+  const title = `${root}${row.exit_execution_ms != null ? ` · latch→submit ${ms(row.exit_execution_ms)}` : ""}${bidDrop}${vwapPair}${reconstructed ? " · שוחזר היסטורית" : ""}`;
+  return { key, label, tone, title, suffix: reconstructed ? " ~" : "" };
 };
+const exitStatus = (row: JsonRecord) => { const status = dealStatus(row); return <span className={status.tone} title={status.title}>{status.label}{status.suffix}</span>; };
 
 // Compact entry-liquidity ("exit-ability at entry") cell. Measurement only —
 // the number is the simulated worst fill price to unload the position now, plus
@@ -66,9 +71,9 @@ const entryLiquidityCell = (row: JsonRecord) => {
   return <span className={tone} title={title}>{head}{ratio}{sync ? "" : " ~"}</span>;
 };
 
-type DealFilters = { token: string; buyUsdMin: string; buyUsdMax: string; buyPriceMin: string; buyPriceMax: string; sellUsdMin: string; sellUsdMax: string; sellPriceMin: string; sellPriceMax: string; cashFlowSign: "" | "positive" | "negative"; cashFlowMin: string; cashFlowMax: string };
-const EMPTY_FILTERS: DealFilters = { token: "", buyUsdMin: "", buyUsdMax: "", buyPriceMin: "", buyPriceMax: "", sellUsdMin: "", sellUsdMax: "", sellPriceMin: "", sellPriceMax: "", cashFlowSign: "", cashFlowMin: "", cashFlowMax: "" };
-const activeFilterCount = (filters: DealFilters) => Object.values(filters).filter(Boolean).length;
+type DealFilters = { token: string; buyUsdMin: string; buyUsdMax: string; buyPriceMin: string; buyPriceMax: string; sellUsdMin: string; sellUsdMax: string; sellPriceMin: string; sellPriceMax: string; cashFlowSign: "" | "positive" | "negative"; cashFlowMin: string; cashFlowMax: string; statuses: string[] };
+const EMPTY_FILTERS: DealFilters = { token: "", buyUsdMin: "", buyUsdMax: "", buyPriceMin: "", buyPriceMax: "", sellUsdMin: "", sellUsdMax: "", sellPriceMin: "", sellPriceMax: "", cashFlowSign: "", cashFlowMin: "", cashFlowMax: "", statuses: [] };
+const activeFilterCount = (filters: DealFilters) => Object.entries(filters).filter(([key, value]) => key === "statuses" ? (value as string[]).length > 0 : Boolean(value)).length;
 const parseNum = (raw: string): number | null => { const n = Number(raw.trim()); return raw.trim() !== "" && Number.isFinite(n) ? n : null; };
 const inRange = (value: number | null, fromRaw: string, toRaw: string): boolean => {
   const a = parseNum(fromRaw), b = parseNum(toRaw);
@@ -90,6 +95,7 @@ const dealMatchesFilters = (row: JsonRecord, filters: DealFilters): boolean => {
   const cashFlow = numberValue(row.cash_flow_usd);
   if (filters.cashFlowSign === "positive" && !(cashFlow !== null && cashFlow > 0)) return false;
   if (filters.cashFlowSign === "negative" && !(cashFlow !== null && cashFlow < 0)) return false;
+  if (filters.statuses.length && !filters.statuses.includes(dealStatus(row).key)) return false;
   return true;
 };
 const FilterIcon = () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden><path d="M4 5h16l-6 8v6l-4-2v-4z"/></svg>;
@@ -233,6 +239,7 @@ export default function Home() {
   const current = objectValue(markets.current);
   const infra = objectValue(snapshot?.infrastructure?.data), disk = objectValue(infra.disk), ram = objectValue(infra.ram), cpu = objectValue(infra.cpu), database = objectValue(infra.database), uptime = objectValue(infra.uptime), services = objectValue(infra.services);
   const dealData = objectValue(snapshot?.externalDeals?.data), deals = arrayValue(dealData.items), summary = objectValue(snapshot?.externalSummary?.data);
+  const statusOptions = Array.from(deals.reduce((byKey, row) => { const status = dealStatus(row); const entry = byKey.get(status.key); if (entry) entry.count += 1; else byKey.set(status.key, { key: status.key, label: status.label, count: 1 }); return byKey; }, new Map<string, { key: string; label: string; count: number }>()).values()).sort((a, b) => b.count - a.count);
   const filteredDeals = deals.filter(row => dealMatchesFilters(row, filters));
   const clientPageCount = Math.max(1, Math.ceil(filteredDeals.length / tableSize));
   const clampedTablePage = Math.min(tablePage, clientPageCount);
@@ -268,10 +275,10 @@ export default function Home() {
 
       <div className={`content-grid${SHOW_CONTROL_CARD ? "" : " single"}`}>
         {SHOW_CONTROL_CARD && <Card className="control-card"><div className="section-head"><div><h2>שליטה במכונה</h2><p>מוצג לצורך הבחנה בלבד</p></div><span className="state-pill warn"><Dot tone="warn"/>READ ONLY</span></div><div className="readonly-callout"><b>אין Command API בדאשבורד</b><span>כל הכפתורים disabled ואינם משנים local state.</span></div><div className="control-actions disabled-actions"><button disabled>הפסק כניסות<small>Pause entries</small></button><button disabled>השבת מסחר<small>שונה מ־Kill Switch</small></button><button disabled>בטל פקודות<small>אינו סוגר פוזיציות</small></button><button disabled>סגור פוזיציות<small>לא מחובר</small></button><button disabled>עצור שירות<small>systemd אינו נגיש</small></button><button className="emergency" disabled>Kill Switch<small>מצב שרת: {kill ? "פעיל" : "לא פעיל"}</small></button></div></Card>}
-        <Card className="activity-card"><SectionNotice label="Polymarket summary" section={snapshot?.sections.externalSummary} now={now}/><div className="section-head"><div><h2>פעילות מסחר (תזרים)</h2><p>מקור: רשומות Polymarket עבור ארנק ה־proxy · תזרים = מכירות − קניות − עמלות. אינו כולל תשלומי הכרעה.</p></div><Badge quality={qualityValue(summary.quality)}/></div><div className="money">{money(summary.total_cash_flow_usd)}</div><div className="stats-grid"><Metric label="עסקאות" value={numberValue(summary.deal_count) === null ? "—" : String(summary.deal_count)}/><Metric label="תזרים חיובי" value={numberValue(summary.wins) === null ? "—" : String(summary.wins)}/><Metric label="תזרים שלילי" value={numberValue(summary.losses) === null ? "—" : String(summary.losses)}/><Metric label="אחוז חיובי" value={numberValue(summary.win_rate_percent) === null ? "—" : `${num.format(numberValue(summary.win_rate_percent)!)}%`}/><Metric label="תזרים חיובי ממוצע" value={money(summary.average_win_usd)}/><Metric label="תזרים שלילי ממוצע" value={money(summary.average_loss_usd)}/><Metric label="יחס תזרים" value={numberValue(summary.profit_factor) === null ? "—" : num.format(numberValue(summary.profit_factor)!)}/><Metric label="עמלות" value={money(summary.fees_usd)}/></div></Card>
+        <Card className="activity-card"><SectionNotice label="Polymarket summary" section={snapshot?.sections.externalSummary} now={now}/><div className="section-head"><div><h2>פעילות מסחר (תזרים)</h2><p>מקור: רשומות Polymarket בלבד (fills + פדיונות) · תזרים = מכירות + פדיונות − קניות − עמלות. עסקה שעדיין לא נפדתה בפועל תוצג כפתוחה עד שפולימרקט ירשמו את הפדיון.</p></div><Badge quality={qualityValue(summary.quality)}/></div><div className="money">{money(summary.total_cash_flow_usd)}</div><div className="stats-grid"><Metric label="עסקאות" value={numberValue(summary.deal_count) === null ? "—" : String(summary.deal_count)}/><Metric label="תזרים חיובי" value={numberValue(summary.wins) === null ? "—" : String(summary.wins)}/><Metric label="תזרים שלילי" value={numberValue(summary.losses) === null ? "—" : String(summary.losses)}/><Metric label="אחוז חיובי" value={numberValue(summary.win_rate_percent) === null ? "—" : `${num.format(numberValue(summary.win_rate_percent)!)}%`}/><Metric label="תזרים חיובי ממוצע" value={money(summary.average_win_usd)}/><Metric label="תזרים שלילי ממוצע" value={money(summary.average_loss_usd)}/><Metric label="יחס תזרים" value={numberValue(summary.profit_factor) === null ? "—" : num.format(numberValue(summary.profit_factor)!)}/><Metric label="עמלות" value={money(summary.fees_usd)}/></div></Card>
       </div>
 
-      <Card className="table-card"><SectionNotice label="Polymarket deals" section={snapshot?.sections.externalDeals} now={now}/><div className="section-head"><div><h2>היסטוריית עסקאות</h2><p>מקור: רשומות Polymarket · עסקה = כל הפעולות על אירוע · תזרים = מכירות − קניות − עמלות</p></div><div className="head-actions"><button className="button secondary export-btn" onClick={() => setExportOpen(true)}>שליחת XL למייל</button><button className={`button secondary filter-btn${activeFilterCount(filters) ? " on" : ""}`} onClick={() => setFiltersOpen(value => !value)}><FilterIcon/>סינון{activeFilterCount(filters) > 0 && <span className="log-count">{activeFilterCount(filters)}</span>}</button><div className="controls"><select aria-label="טווח" value={selectedRange} onChange={event => setRange(event.target.value as DashboardQuery["range"])}><option value="today">היום</option><option value="yesterday">אתמול</option><option value="3d">3 ימים</option><option value="7d">7 ימים</option><option value="30d">30 ימים</option><option value="custom">טווח מותאם</option></select>{selectedRange === "custom" && <><input aria-label="מתאריך" type="date" value={query.from || ""} onChange={event => { setQuery(value => ({ ...value, from: event.target.value })); setTablePage(1); }}/><input aria-label="עד תאריך" type="date" value={query.to || ""} onChange={event => { setQuery(value => ({ ...value, to: event.target.value })); setTablePage(1); }}/></>}</div><select aria-label="שורות בעמוד" className="page-size" value={tableSize} onChange={event => { setTableSize(Number(event.target.value)); setTablePage(1); }}><option value={25}>25 בעמוד</option><option value={50}>50 בעמוד</option><option value={100}>100 בעמוד</option></select><Badge quality={qualityValue(dealData.quality)}/></div></div>
+      <Card className="table-card"><SectionNotice label="Polymarket deals" section={snapshot?.sections.externalDeals} now={now}/><div className="section-head"><div><h2>היסטוריית עסקאות</h2><p>מקור: רשומות Polymarket בלבד · עסקה = כל הפעולות על אירוע · תזרים = מכירות + פדיונות − קניות − עמלות</p></div><div className="head-actions"><button className="button secondary export-btn" onClick={() => setExportOpen(true)}>שליחת XL למייל</button><button className={`button secondary filter-btn${activeFilterCount(filters) ? " on" : ""}`} onClick={() => setFiltersOpen(value => !value)}><FilterIcon/>סינון{activeFilterCount(filters) > 0 && <span className="log-count">{activeFilterCount(filters)}</span>}</button><div className="controls"><select aria-label="טווח" value={selectedRange} onChange={event => setRange(event.target.value as DashboardQuery["range"])}><option value="today">היום</option><option value="yesterday">אתמול</option><option value="3d">3 ימים</option><option value="7d">7 ימים</option><option value="30d">30 ימים</option><option value="custom">טווח מותאם</option></select>{selectedRange === "custom" && <><input aria-label="מתאריך" type="date" value={query.from || ""} onChange={event => { setQuery(value => ({ ...value, from: event.target.value })); setTablePage(1); }}/><input aria-label="עד תאריך" type="date" value={query.to || ""} onChange={event => { setQuery(value => ({ ...value, to: event.target.value })); setTablePage(1); }}/></>}</div><select aria-label="שורות בעמוד" className="page-size" value={tableSize} onChange={event => { setTableSize(Number(event.target.value)); setTablePage(1); }}><option value={25}>25 בעמוד</option><option value={50}>50 בעמוד</option><option value={100}>100 בעמוד</option></select><Badge quality={qualityValue(dealData.quality)}/></div></div>
       {filtersOpen && <div className="filter-panel">
         <div className="filter-field"><label>טוקן</label><select value={filters.token} onChange={event => setFilter({ token: event.target.value })}><option value="">הכל</option><option value="Up">Up</option><option value="Down">Down</option></select></div>
         <div className="filter-field"><label>תזרים</label><select value={filters.cashFlowSign} onChange={event => setFilter({ cashFlowSign: event.target.value as DealFilters["cashFlowSign"] })}><option value="">הכל</option><option value="positive">חיובי</option><option value="negative">שלילי</option></select></div>
@@ -280,6 +287,7 @@ export default function Home() {
         <RangeField label="מכירה $" from={filters.sellUsdMin} to={filters.sellUsdMax} onFrom={v => setFilter({ sellUsdMin: v })} onTo={v => setFilter({ sellUsdMax: v })}/>
         <RangeField label="מחיר קנייה" hint="(0–1)" step="0.01" min={0} max={1} from={filters.buyPriceMin} to={filters.buyPriceMax} onFrom={v => setFilter({ buyPriceMin: v })} onTo={v => setFilter({ buyPriceMax: v })}/>
         <RangeField label="מחיר מכירה" hint="(0–1)" step="0.01" min={0} max={1} from={filters.sellPriceMin} to={filters.sellPriceMax} onFrom={v => setFilter({ sellPriceMin: v })} onTo={v => setFilter({ sellPriceMax: v })}/>
+        <div className="filter-field status-field"><label>סטטוס{filters.statuses.length > 0 && <span className="hint"> ({filters.statuses.length} נבחרו)</span>}</label><div className="status-chips">{statusOptions.map(option => <button key={option.key} className={filters.statuses.includes(option.key) ? "on" : ""} onClick={() => setFilter({ statuses: filters.statuses.includes(option.key) ? filters.statuses.filter(k => k !== option.key) : [...filters.statuses, option.key] })}>{option.label}<span className="log-count">{option.count}</span></button>)}</div></div>
         <button className="button secondary filter-clear" disabled={!activeFilterCount(filters)} onClick={() => setFilter(EMPTY_FILTERS)}>נקה סינון</button>
       </div>}
       {pageDeals.length ? <div className="table-scroll"><table><thead><tr><th>#</th><th>התחלה</th><th>סיום</th><th>שוק</th><th>טוקן</th><th>פעולות</th><th>קנייה $</th><th>מחיר קנייה</th><th>מכירה $</th><th>מחיר מכירה</th><th>עמלות</th><th>תזרים</th><th>נזילות כניסה</th><th>סטטוס</th></tr></thead><tbody>{pageDeals.map((row, index) => <tr key={`${textValue(row.deal_key)}-${index}`}><td>{textValue(row.seq) || "—"}</td><td>{dateTime(row.first_action_at)}</td><td>{dateTime(row.last_action_at)}</td><td>{textValue(row.market_title) || textValue(row.event_slug) || textValue(row.deal_key)}</td><td>{textValue(row.outcomes) || "—"}</td><td>{textValue(row.action_count)}</td><td>{money(row.buy_notional_usd)}</td><td>{avgPrice(row.buy_notional_usd, row.buy_size)}</td><td>{money(row.sell_notional_usd)}</td><td>{avgPrice(row.sell_notional_usd, row.sell_size)}</td><td>{money(row.fees_usd)}</td><td className={(numberValue(row.cash_flow_usd) ?? 0) >= 0 ? "positive" : "negative"}>{money(row.cash_flow_usd)}</td><td>{entryLiquidityCell(row)}</td><td>{exitStatus(row)}</td></tr>)}</tbody></table></div> : <Empty quality={qualityValue(dealData.quality)} reason={activeFilterCount(filters) ? `אין עסקאות התואמות את הסינון (מתוך ${deals.length} בטווח). בדוק את הערכים — מחירים הם בין 0 ל־1, "מ־" הוא הגבול התחתון.` : "אין רשומות Polymarket בטווח שנבחר."}/>}
