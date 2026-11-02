@@ -71,6 +71,36 @@ const entryLiquidityCell = (row: JsonRecord) => {
   return <span className={tone} title={title}>{head}{ratio}{sync ? "" : " ~"}</span>;
 };
 
+// BTC (Chainlink) reference cells. Measurement only — the number is how far
+// BTC had moved in the deal's direction since the event opened ("+" = for us).
+const signedUsd = (value: number) => `${value > 0 ? "+" : value < 0 ? "−" : ""}${usd.format(Math.abs(value))}`;
+const btcCell = (delta: number | null, head: string, title: string) =>
+  <span className={delta === null ? "" : delta >= 0 ? "positive" : "negative"} title={title}>{head}</span>;
+const btcEntryCell = (row: JsonRecord) => {
+  const btc = objectValue(row.btc);
+  const delta = numberValue(btc.btc_entry_directional_delta_usd);
+  const missing = textValue(btc.btc_entry_missing_reason);
+  if (delta === null) return missing ? <span title={missing}>—</span> : "—";
+  const mode = textValue(btc.btc_gate_mode);
+  const title = [
+    `פתיחה ${money(btc.btc_open_price)}`,
+    `בכניסה ${money(btc.btc_entry_price)}`,
+    btc.btc_entry_age_ms != null ? `גיל ${ms(btc.btc_entry_age_ms)}` : "",
+    mode ? `שער ${textValue(btc.btc_gate_reason) || "—"} (${mode})` : "",
+  ].filter(Boolean).join(" · ");
+  return btcCell(delta, signedUsd(delta), title);
+};
+const btcExitCell = (row: JsonRecord) => {
+  const btc = objectValue(row.btc);
+  const type = textValue(btc.btc_exit_type);
+  const missing = textValue(btc.btc_exit_missing_reason);
+  if (!type) return missing ? <span title={missing}>—</span> : "—";
+  if (type === "RESOLUTION") return <span title="הכרעת שוק — ללא מחיר יציאה">הכרעה</span>;
+  const delta = numberValue(btc.btc_exit_directional_delta_usd);
+  const title = `${type} · ביציאה ${money(btc.btc_exit_price)}${btc.btc_exit_age_ms != null ? ` · גיל ${ms(btc.btc_exit_age_ms)}` : ""}`;
+  return btcCell(delta, delta === null ? type : `${signedUsd(delta)} · ${type}`, title);
+};
+
 type DealFilters = { token: string; buyUsdMin: string; buyUsdMax: string; buyPriceMin: string; buyPriceMax: string; sellUsdMin: string; sellUsdMax: string; sellPriceMin: string; sellPriceMax: string; cashFlowSign: "" | "positive" | "negative"; cashFlowMin: string; cashFlowMax: string; statuses: string[] };
 const EMPTY_FILTERS: DealFilters = { token: "", buyUsdMin: "", buyUsdMax: "", buyPriceMin: "", buyPriceMax: "", sellUsdMin: "", sellUsdMax: "", sellPriceMin: "", sellPriceMax: "", cashFlowSign: "", cashFlowMin: "", cashFlowMax: "", statuses: [] };
 const activeFilterCount = (filters: DealFilters) => Object.entries(filters).filter(([key, value]) => key === "statuses" ? (value as string[]).length > 0 : Boolean(value)).length;
@@ -290,7 +320,7 @@ export default function Home() {
         <div className="filter-field status-field"><label>סטטוס{filters.statuses.length > 0 && <span className="hint"> ({filters.statuses.length} נבחרו)</span>}</label><div className="status-chips">{statusOptions.map(option => <button key={option.key} className={filters.statuses.includes(option.key) ? "on" : ""} onClick={() => setFilter({ statuses: filters.statuses.includes(option.key) ? filters.statuses.filter(k => k !== option.key) : [...filters.statuses, option.key] })}>{option.label}<span className="log-count">{option.count}</span></button>)}</div></div>
         <button className="button secondary filter-clear" disabled={!activeFilterCount(filters)} onClick={() => setFilter(EMPTY_FILTERS)}>נקה סינון</button>
       </div>}
-      {pageDeals.length ? <div className="table-scroll"><table><thead><tr><th>#</th><th>התחלה</th><th>סיום</th><th>שוק</th><th>טוקן</th><th>פעולות</th><th>קנייה $</th><th>מחיר קנייה</th><th>מכירה $</th><th>מחיר מכירה</th><th>עמלות</th><th>תזרים</th><th>נזילות כניסה</th><th>סטטוס</th></tr></thead><tbody>{pageDeals.map((row, index) => <tr key={`${textValue(row.deal_key)}-${index}`}><td>{textValue(row.seq) || "—"}</td><td>{dateTime(row.first_action_at)}</td><td>{dateTime(row.last_action_at)}</td><td>{textValue(row.market_title) || textValue(row.event_slug) || textValue(row.deal_key)}</td><td>{textValue(row.outcomes) || "—"}</td><td>{textValue(row.action_count)}</td><td>{money(row.buy_notional_usd)}</td><td>{avgPrice(row.buy_notional_usd, row.buy_size)}</td><td>{money(row.sell_notional_usd)}</td><td>{avgPrice(row.sell_notional_usd, row.sell_size)}</td><td>{money(row.fees_usd)}</td><td className={(numberValue(row.cash_flow_usd) ?? 0) >= 0 ? "positive" : "negative"}>{money(row.cash_flow_usd)}</td><td>{entryLiquidityCell(row)}</td><td>{exitStatus(row)}</td></tr>)}</tbody></table></div> : <Empty quality={qualityValue(dealData.quality)} reason={activeFilterCount(filters) ? `אין עסקאות התואמות את הסינון (מתוך ${deals.length} בטווח). בדוק את הערכים — מחירים הם בין 0 ל־1, "מ־" הוא הגבול התחתון.` : "אין רשומות Polymarket בטווח שנבחר."}/>}
+      {pageDeals.length ? <div className="table-scroll"><table><thead><tr><th>#</th><th>התחלה</th><th>סיום</th><th>שוק</th><th>טוקן</th><th>פעולות</th><th>קנייה $</th><th>מחיר קנייה</th><th>מכירה $</th><th>מחיר מכירה</th><th>עמלות</th><th>תזרים</th><th>נזילות כניסה</th><th>BTC בכניסה</th><th>BTC ביציאה</th><th>סטטוס</th></tr></thead><tbody>{pageDeals.map((row, index) => <tr key={`${textValue(row.deal_key)}-${index}`}><td>{textValue(row.seq) || "—"}</td><td>{dateTime(row.first_action_at)}</td><td>{dateTime(row.last_action_at)}</td><td>{textValue(row.market_title) || textValue(row.event_slug) || textValue(row.deal_key)}</td><td>{textValue(row.outcomes) || "—"}</td><td>{textValue(row.action_count)}</td><td>{money(row.buy_notional_usd)}</td><td>{avgPrice(row.buy_notional_usd, row.buy_size)}</td><td>{money(row.sell_notional_usd)}</td><td>{avgPrice(row.sell_notional_usd, row.sell_size)}</td><td>{money(row.fees_usd)}</td><td className={(numberValue(row.cash_flow_usd) ?? 0) >= 0 ? "positive" : "negative"}>{money(row.cash_flow_usd)}</td><td>{entryLiquidityCell(row)}</td><td>{btcEntryCell(row)}</td><td>{btcExitCell(row)}</td><td>{exitStatus(row)}</td></tr>)}</tbody></table></div> : <Empty quality={qualityValue(dealData.quality)} reason={activeFilterCount(filters) ? `אין עסקאות התואמות את הסינון (מתוך ${deals.length} בטווח). בדוק את הערכים — מחירים הם בין 0 ל־1, "מ־" הוא הגבול התחתון.` : "אין רשומות Polymarket בטווח שנבחר."}/>}
       <div className="table-footer"><span>{filteredDeals.length === deals.length ? `${deals.length} עסקאות בטווח` : `${filteredDeals.length} מתוך ${deals.length} עסקאות (מסונן)`}{numberValue(dealData.total) !== null && (dealData.total as number) > deals.length && ` · מוצג ${deals.length} מתוך ${dealData.total} — צמצם טווח תאריכים`}</span></div>
       <div className="pagination"><button disabled={clampedTablePage <= 1} onClick={() => setTablePage(value => value - 1)}>הקודם</button><span>עמוד {clampedTablePage} מתוך {clientPageCount}</span><button disabled={clampedTablePage >= clientPageCount} onClick={() => setTablePage(value => value + 1)}>הבא</button></div></Card>
       {exportOpen && <ExportDialog csrf={csrf} onClose={() => setExportOpen(false)}/>}
