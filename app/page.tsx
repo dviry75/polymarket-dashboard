@@ -95,10 +95,14 @@ const btcExitCell = (row: JsonRecord) => {
   const type = textValue(btc.btc_exit_type);
   const missing = textValue(btc.btc_exit_missing_reason);
   if (!type) return missing ? <span title={missing}>—</span> : "—";
-  if (type === "RESOLUTION") return <span title="הכרעת שוק — ללא מחיר יציאה">הכרעה</span>;
+  // A resolution exit has no sell fill; its BTC point is the event close tick.
+  const label = type === "RESOLUTION" ? "הכרעה" : type;
   const delta = numberValue(btc.btc_exit_directional_delta_usd);
-  const title = `${type} · ביציאה ${money(btc.btc_exit_price)}${btc.btc_exit_age_ms != null ? ` · גיל ${ms(btc.btc_exit_age_ms)}` : ""}`;
-  return btcCell(delta, delta === null ? type : `${signedUsd(delta)} · ${type}`, title);
+  const where = type === "RESOLUTION" ? "בסגירת האירוע" : "ביציאה";
+  const title = delta === null && missing
+    ? `${label} · ${missing}`
+    : `${label} · ${where} ${money(btc.btc_exit_price)}${btc.btc_exit_age_ms != null ? ` · גיל ${ms(btc.btc_exit_age_ms)}` : ""}`;
+  return btcCell(delta, delta === null ? label : `${signedUsd(delta)} · ${label}`, title);
 };
 
 type DealFilters = { token: string; buyUsdMin: string; buyUsdMax: string; buyPriceMin: string; buyPriceMax: string; sellUsdMin: string; sellUsdMax: string; sellPriceMin: string; sellPriceMax: string; cashFlowSign: "" | "positive" | "negative"; cashFlowMin: string; cashFlowMax: string; statuses: string[] };
