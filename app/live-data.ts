@@ -104,6 +104,37 @@ export async function requestTradeExport(recipient: string, csrfToken: string): 
   }
 }
 
+export type NotificationType = { key: string; label: string; always_on: boolean };
+export type NotificationRecipient = { address: string; enabled: Record<string, boolean> };
+export type NotificationPrefs = { types: NotificationType[]; recipients: NotificationRecipient[] };
+
+const parseNotificationPrefs = (body: unknown): NotificationPrefs => {
+  const data = objectValue(objectValue(body).data);
+  return {
+    types: arrayValue(data.types).map(row => ({ key: textValue(row.key), label: textValue(row.label) || textValue(row.key), always_on: boolValue(row.always_on) })),
+    recipients: arrayValue(data.recipients).map(row => ({ address: textValue(row.address), enabled: Object.fromEntries(Object.entries(objectValue(row.enabled)).map(([key, value]) => [key, value !== false])) })),
+  };
+};
+
+export async function fetchNotificationPrefs(signal?: AbortSignal): Promise<NotificationPrefs> {
+  const response = await fetch(`${PRODUCTION_DATA_SOURCE}notifications/preferences`, { method: "GET", credentials: "same-origin", cache: "no-store", headers: { Accept: "application/json" }, signal });
+  if (response.status === 401 || response.status === 403) throw new AuthenticationRequiredError("נדרשת התחברות מחדש");
+  if (!response.ok) throw new DashboardRequestError("שליפת הגדרות ההתראות נכשלה", response.status);
+  return parseNotificationPrefs(await response.json().catch(() => null));
+}
+
+export async function saveNotificationPrefs(recipients: NotificationRecipient[], csrfToken: string): Promise<NotificationPrefs> {
+  const response = await fetch(`${PRODUCTION_DATA_SOURCE}notifications/preferences`, {
+    method: "POST", credentials: "same-origin", cache: "no-store",
+    headers: { "Content-Type": "application/json", "X-Live-CSRF-Token": csrfToken },
+    body: JSON.stringify({ enabled: Object.fromEntries(recipients.map(row => [row.address, row.enabled])) }),
+  });
+  if (response.status === 401 || response.status === 403) throw new AuthenticationRequiredError("נדרשת התחברות מחדש");
+  const body = await response.json().catch(() => null);
+  if (!response.ok) throw new DashboardRequestError(textValue(objectValue(objectValue(body).error).message) || textValue(objectValue(body).detail) || `שמירת ההגדרות נכשלה (${response.status})`, response.status);
+  return parseNotificationPrefs(body);
+}
+
 export async function logout(csrfToken: string): Promise<void> {
   const response = await fetch("/live/logout", { method: "POST", credentials: "same-origin", cache: "no-store", headers: { "X-Live-CSRF-Token": csrfToken } });
   if (!response.ok) throw new DashboardRequestError("ההתנתקות נכשלה", response.status);

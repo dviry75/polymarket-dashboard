@@ -2,7 +2,7 @@
 
 import "./live.css";
 import { useEffect, useRef, useState } from "react";
-import { AuthenticationRequiredError, arrayValue, boolValue, fetchDashboardSnapshot, fetchExportRecipients, logout, metricValue, numberValue, objectValue, qualityValue, requestTradeExport, textValue, type DashboardQuery, type DashboardSection, type DashboardSnapshot, type JsonRecord, type MetricValue, type Quality } from "./live-data";
+import { AuthenticationRequiredError, arrayValue, boolValue, fetchDashboardSnapshot, fetchExportRecipients, fetchNotificationPrefs, logout, metricValue, numberValue, objectValue, qualityValue, requestTradeExport, saveNotificationPrefs, textValue, type DashboardQuery, type DashboardSection, type DashboardSnapshot, type JsonRecord, type MetricValue, type NotificationPrefs, type Quality } from "./live-data";
 
 const TZ = "Asia/Jerusalem";
 const SHOW_CONTROL_CARD = false; // "שליטה במכונה" hidden for now — flip to true to restore
@@ -237,6 +237,41 @@ function ExportDialog({ csrf, onClose }: { csrf: string; onClose: () => void }) 
   </div></div>;
 }
 
+function NotificationsDialog({ csrf, onClose }: { csrf: string; onClose: () => void }) {
+  const [prefs, setPrefs] = useState<NotificationPrefs | null>(null);
+  const [state, setState] = useState<"loading" | "ready" | "saving" | "saved" | "error">("loading");
+  const [error, setError] = useState("");
+  useEffect(() => {
+    let alive = true;
+    fetchNotificationPrefs().then(data => { if (alive) { setPrefs(data); setState(data.recipients.length ? "ready" : "error"); if (!data.recipients.length) setError("רשימת הנמענים אינה זמינה בשרת."); } })
+      .catch(reason => { if (alive) { setState("error"); setError(reason instanceof Error ? reason.message : "שליפת הגדרות ההתראות נכשלה"); } });
+    return () => { alive = false; };
+  }, []);
+  const toggle = (address: string, key: string) => {
+    setPrefs(value => value && { ...value, recipients: value.recipients.map(row => row.address === address ? { ...row, enabled: { ...row.enabled, [key]: !(row.enabled[key] ?? true) } } : row) });
+    setState("ready"); setError("");
+  };
+  const lockedOff = (prefs?.types || []).filter(type => type.always_on && prefs?.recipients.every(row => row.enabled[type.key] === false));
+  const submit = async () => {
+    if (!prefs) return;
+    setState("saving");
+    try { setPrefs(await saveNotificationPrefs(prefs.recipients, csrf)); setState("saved"); }
+    catch (reason) { setState("error"); setError(reason instanceof Error ? reason.message : "שמירת ההגדרות נכשלה"); }
+  };
+  return <div className="modal-backdrop" onClick={onClose}><div className="modal prefs-modal" onClick={event => event.stopPropagation()}>
+    <div className="modal-symbol">@</div>
+    <h2>הגדרות התראות במייל</h2>
+    <p>בחר אילו סוגי מיילים יישלחו לכל כתובת. הכתובות עצמן מוגדרות בשרת.</p>
+    {prefs && prefs.recipients.length > 0 && <div className="table-scroll"><table className="prefs-table"><thead><tr><th>כתובת</th>{prefs.types.map(type => <th key={type.key}>{type.label}</th>)}</tr></thead>
+      <tbody>{prefs.recipients.map(row => <tr key={row.address}><td dir="ltr">{row.address}</td>{prefs.types.map(type => <td key={type.key}><label className="switch"><input type="checkbox" aria-label={`${type.label} · ${row.address}`} checked={row.enabled[type.key] ?? true} disabled={state === "saving"} onChange={() => toggle(row.address, type.key)}/><i/></label></td>)}</tr>)}</tbody></table></div>}
+    {lockedOff.length > 0 && <p className="modal-error">{lockedOff.map(type => type.label).join(", ")} חייב להישאר פעיל לפחות לכתובת אחת.</p>}
+    {state === "loading" && <p>טוען…</p>}
+    {state === "saved" && <p className="modal-ok">ההגדרות נשמרו ויחולו מהמייל הבא.</p>}
+    {state === "error" && <p className="modal-error">{error}</p>}
+    <div><button className="button secondary" onClick={onClose}>סגור</button><button className="button primary" disabled={!prefs || !prefs.recipients.length || state === "saving" || state === "loading" || lockedOff.length > 0} onClick={() => void submit()}>{state === "saving" ? "שומר…" : "שמור"}</button></div>
+  </div></div>;
+}
+
 export default function Home() {
   const [query, setQuery] = useState<DashboardQuery>({ range: "today", page: 1, pageSize: 5000 });
   const [tablePage, setTablePage] = useState(1);
@@ -249,6 +284,7 @@ export default function Home() {
   const [error, setError] = useState("");
   const [now, setNow] = useState(0);
   const [exportOpen, setExportOpen] = useState(false);
+  const [prefsOpen, setPrefsOpen] = useState(false);
   const queryKey = JSON.stringify(query);
 
   useEffect(() => { const clock = window.setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(clock); }, []);
@@ -289,7 +325,7 @@ export default function Home() {
   const doLogout = async () => { try { await logout(csrf); window.location.assign("/live/login?next=/live-status/"); } catch (reason) { setError(reason instanceof Error ? reason.message : "ההתנתקות נכשלה"); setState("error"); } };
 
   return <main dir="rtl">
-    <header className="topbar"><div className="brand"><div className="brand-mark">P</div><div><b>Polymarket Robot</b><small>LIVE · READ ONLY</small></div></div><div className="top-statuses"><span className="top-chip data-age">רענון: <b>{refreshAge === null ? "—" : secondsLabel(refreshAge)}</b></span><span className="server-clock"><b>{new Date(now).toLocaleTimeString("en-GB", { timeZone: TZ, hour12: false })}</b><small>Asia/Jerusalem</small></span></div><button className="button secondary" disabled={!csrf} onClick={() => void doLogout()}>התנתקות</button></header>
+    <header className="topbar"><div className="brand"><div className="brand-mark">P</div><div><b>Polymarket Robot</b><small>LIVE · READ ONLY</small></div></div><div className="top-statuses"><span className="top-chip data-age">רענון: <b>{refreshAge === null ? "—" : secondsLabel(refreshAge)}</b></span><span className="server-clock"><b>{new Date(now).toLocaleTimeString("en-GB", { timeZone: TZ, hour12: false })}</b><small>Asia/Jerusalem</small></span></div><button className="button secondary" disabled={!csrf} onClick={() => setPrefsOpen(true)}>הגדרות התראות</button><button className="button secondary" disabled={!csrf} onClick={() => void doLogout()}>התנתקות</button></header>
     <div className="page-shell">
       <div className="page-title"><div><p className="eyebrow">PRODUCTION DATA · CUTOVER {textValue(snapshot?.overview?.meta.cutover_at) || "UNAVAILABLE"}</p><h1>מרכז מצב מסחר</h1><p>מקור יחיד: Dashboard API v1. אין fallback ל־Mock ואין פעולות מסחר.</p></div></div>
       {state === "loading" && <div className="loading-banner">טוען נתוני LIVE מאומתים…</div>}
@@ -328,6 +364,7 @@ export default function Home() {
       <div className="table-footer"><span>{filteredDeals.length === deals.length ? `${deals.length} עסקאות בטווח` : `${filteredDeals.length} מתוך ${deals.length} עסקאות (מסונן)`}{numberValue(dealData.total) !== null && (dealData.total as number) > deals.length && ` · מוצג ${deals.length} מתוך ${dealData.total} — צמצם טווח תאריכים`}</span></div>
       <div className="pagination"><button disabled={clampedTablePage <= 1} onClick={() => setTablePage(value => value - 1)}>הקודם</button><span>עמוד {clampedTablePage} מתוך {clientPageCount}</span><button disabled={clampedTablePage >= clientPageCount} onClick={() => setTablePage(value => value + 1)}>הבא</button></div></Card>
       {exportOpen && <ExportDialog csrf={csrf} onClose={() => setExportOpen(false)}/>}
+      {prefsOpen && <NotificationsDialog csrf={csrf} onClose={() => setPrefsOpen(false)}/>}
 
       <Card className="health-card"><SectionNotice label="Infrastructure" section={snapshot?.sections.infrastructure} now={now}/><div className="section-head"><div><h2>בריאות ותשתית</h2><p>דגימה cached ל־15 שניות; dashboard read-only</p></div><Badge quality={qualityValue(health.quality)}/></div><div className="health-grid"><div className="storage"><div><span>Disk</span><b>{bytes(disk.used_bytes)} / {bytes(disk.total_bytes)}</b></div><div className="progress"><i style={{ width: `${numberValue(disk.used_percent) ?? 0}%` }}/></div><small>{bytes(disk.free_bytes)} פנוי · {textValue(disk.used_percent)}%</small></div><Metric label="DB size" value={bytes(database.size_bytes)}/><Metric label="CPU" value={numberValue(cpu.used_percent) === null ? "—" : `${cpu.used_percent}%`}/><Metric label="RAM" value={`${bytes(ram.used_bytes)} / ${bytes(ram.total_bytes)}`}/><Metric label="Host uptime" value={secondsLabel(uptime.host_seconds)}/><Metric label="Dashboard uptime" value={secondsLabel(uptime.dashboard_process_seconds)}/><Metric label="Dashboard service" value={textValue(objectValue(services.dashboard).state) || "UNKNOWN"}/><Metric label="Restart count" value={textValue(objectValue(services.dashboard).restart_count) || "0"}/></div><div className="freshness-row"><span>זמן שרת: {dateTime(snapshot?.overview?.meta.as_of)}</span><span>Reconciliation אחרון: {dateTime(health.last_reconciliation)}</span><span>API {textValue(snapshot?.overview?.meta.api_version)} · {textValue(snapshot?.overview?.meta.environment)} / {textValue(snapshot?.overview?.meta.execution_mode)}</span></div></Card>
       <footer>Polymarket Robot · LIVE READ ONLY · Asia/Jerusalem · USD · מחירי חוזים 0–1</footer>
