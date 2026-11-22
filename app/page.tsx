@@ -71,24 +71,34 @@ const entryLiquidityCell = (row: JsonRecord) => {
   return <span className={tone} title={title}>{head}{ratio}{sync ? "" : " ~"}</span>;
 };
 
-// BTC (Chainlink) reference cells. Measurement only — the number is how far
-// BTC had moved in the deal's direction since the event opened ("+" = for us).
+// BTC (Chainlink) reference cells. Measurement only. The number is BTC's real
+// move since the event opened (price to beat): "+" green = BTC went up,
+// "−" red = BTC went down, whatever side the deal bought. The move in the
+// deal's favour is kept in the tooltip.
 const signedUsd = (value: number) => `${value > 0 ? "+" : value < 0 ? "−" : ""}${usd.format(Math.abs(value))}`;
-const btcCell = (delta: number | null, head: string, title: string) =>
-  <span className={delta === null ? "" : delta >= 0 ? "positive" : "negative"} title={title}>{head}</span>;
+const btcMove = (btc: JsonRecord, priceKey: string, directionalKey: string): number | null => {
+  const open = numberValue(btc.btc_open_price);
+  const at = numberValue(btc[priceKey]);
+  if (open !== null && at !== null) return at - open;
+  return numberValue(btc[directionalKey]) === null ? null : NaN; // directional only: real move unknown
+};
+const btcCell = (move: number | null, head: string, title: string) =>
+  <span className={move === null || Number.isNaN(move) ? "" : move >= 0 ? "positive" : "negative"} title={title}>{head}</span>;
+const forUs = (value: unknown) => numberValue(value) === null ? "" : `לטובת העסקה ${signedUsd(numberValue(value)!)}`;
 const btcEntryCell = (row: JsonRecord) => {
   const btc = objectValue(row.btc);
-  const delta = numberValue(btc.btc_entry_directional_delta_usd);
+  const move = btcMove(btc, "btc_entry_price", "btc_entry_directional_delta_usd");
   const missing = textValue(btc.btc_entry_missing_reason);
-  if (delta === null) return missing ? <span title={missing}>—</span> : "—";
+  if (move === null) return missing ? <span title={missing}>—</span> : "—";
   const mode = textValue(btc.btc_gate_mode);
   const title = [
     `פתיחה ${money(btc.btc_open_price)}`,
     `בכניסה ${money(btc.btc_entry_price)}`,
+    forUs(btc.btc_entry_directional_delta_usd),
     btc.btc_entry_age_ms != null ? `גיל ${ms(btc.btc_entry_age_ms)}` : "",
     mode ? `שער ${textValue(btc.btc_gate_reason) || "—"} (${mode})` : "",
   ].filter(Boolean).join(" · ");
-  return btcCell(delta, signedUsd(delta), title);
+  return btcCell(move, Number.isNaN(move) ? "—" : signedUsd(move), title);
 };
 const btcExitCell = (row: JsonRecord) => {
   const btc = objectValue(row.btc);
@@ -97,12 +107,18 @@ const btcExitCell = (row: JsonRecord) => {
   if (!type) return missing ? <span title={missing}>—</span> : "—";
   // A resolution exit has no sell fill; its BTC point is the event close tick.
   const label = type === "RESOLUTION" ? "הכרעה" : type;
-  const delta = numberValue(btc.btc_exit_directional_delta_usd);
+  const move = btcMove(btc, "btc_exit_price", "btc_exit_directional_delta_usd");
   const where = type === "RESOLUTION" ? "בסגירת האירוע" : "ביציאה";
-  const title = delta === null && missing
+  const title = move === null && missing
     ? `${label} · ${missing}`
-    : `${label} · ${where} ${money(btc.btc_exit_price)}${btc.btc_exit_age_ms != null ? ` · גיל ${ms(btc.btc_exit_age_ms)}` : ""}`;
-  return btcCell(delta, delta === null ? label : `${signedUsd(delta)} · ${label}`, title);
+    : [
+      label,
+      `פתיחה ${money(btc.btc_open_price)}`,
+      `${where} ${money(btc.btc_exit_price)}`,
+      forUs(btc.btc_exit_directional_delta_usd),
+      btc.btc_exit_age_ms != null ? `גיל ${ms(btc.btc_exit_age_ms)}` : "",
+    ].filter(Boolean).join(" · ");
+  return btcCell(move, move === null || Number.isNaN(move) ? label : `${signedUsd(move)} · ${label}`, title);
 };
 
 type DealFilters = { token: string; buyUsdMin: string; buyUsdMax: string; buyPriceMin: string; buyPriceMax: string; sellUsdMin: string; sellUsdMax: string; sellPriceMin: string; sellPriceMax: string; cashFlowSign: "" | "positive" | "negative"; cashFlowMin: string; cashFlowMax: string; statuses: string[] };
