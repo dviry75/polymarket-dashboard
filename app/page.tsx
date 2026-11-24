@@ -121,8 +121,32 @@ const btcExitCell = (row: JsonRecord) => {
   return btcCell(move, move === null || Number.isNaN(move) ? label : `${signedUsd(move)} · ${label}`, title);
 };
 
-type DealFilters = { token: string; buyUsdMin: string; buyUsdMax: string; buyPriceMin: string; buyPriceMax: string; sellUsdMin: string; sellUsdMax: string; sellPriceMin: string; sellPriceMax: string; cashFlowSign: "" | "positive" | "negative"; cashFlowMin: string; cashFlowMax: string; statuses: string[] };
-const EMPTY_FILTERS: DealFilters = { token: "", buyUsdMin: "", buyUsdMax: "", buyPriceMin: "", buyPriceMax: "", sellUsdMin: "", sellUsdMax: "", sellPriceMin: "", sellPriceMax: "", cashFlowSign: "", cashFlowMin: "", cashFlowMax: "", statuses: [] };
+// "תוצאת שוק": the market's winning side. Green when it is the token the deal
+// bought, red when it is the other side. Shared by the cell and its filter.
+type MarketResult = "won" | "lost" | "unknown" | "";
+const boughtTokens = (row: JsonRecord) => textValue(row.outcomes).split(",").map(v => v.trim().toUpperCase()).filter(Boolean);
+const marketResult = (row: JsonRecord): MarketResult => {
+  const winner = textValue(row.market_outcome).trim().toUpperCase();
+  if (!winner) return "";
+  const bought = boughtTokens(row);
+  if (bought.length !== 1) return "unknown"; // both sides traded: no single "ours"
+  return bought[0] === winner ? "won" : "lost";
+};
+const marketOutcomeCell = (row: JsonRecord) => {
+  const winner = textValue(row.market_outcome).trim().toUpperCase();
+  if (!winner) return <span title="השוק עוד לא הוכרע">—</span>;
+  const result = marketResult(row);
+  const tone = result === "won" ? "positive" : result === "lost" ? "negative" : "";
+  const title = result === "won" ? "השוק הוכרע לטובת הטוקן שקנינו" : result === "lost" ? "השוק הוכרע לצד השני" : `קנינו: ${boughtTokens(row).join(", ") || "—"}`;
+  return <span className={tone} title={title}><b>{winner}</b></span>;
+};
+// The BTC entry numbers the filters read: the column's real BTC move and the
+// move in the deal's favour (what the BTC gate measures).
+const btcEntryMove = (row: JsonRecord): number | null => { const move = btcMove(objectValue(row.btc), "btc_entry_price", "btc_entry_directional_delta_usd"); return move === null || Number.isNaN(move) ? null : move; };
+const btcEntryForUs = (row: JsonRecord): number | null => numberValue(objectValue(row.btc).btc_entry_directional_delta_usd);
+
+type DealFilters = { token: string; buyUsdMin: string; buyUsdMax: string; buyPriceMin: string; buyPriceMax: string; sellUsdMin: string; sellUsdMax: string; sellPriceMin: string; sellPriceMax: string; cashFlowSign: "" | "positive" | "negative"; cashFlowMin: string; cashFlowMax: string; statuses: string[]; btcEntryMin: string; btcEntryMax: string; btcForUsMin: string; btcForUsMax: string; marketOutcome: "" | "UP" | "DOWN" | "won" | "lost" | "pending" };
+const EMPTY_FILTERS: DealFilters = { token: "", buyUsdMin: "", buyUsdMax: "", buyPriceMin: "", buyPriceMax: "", sellUsdMin: "", sellUsdMax: "", sellPriceMin: "", sellPriceMax: "", cashFlowSign: "", cashFlowMin: "", cashFlowMax: "", statuses: [], btcEntryMin: "", btcEntryMax: "", btcForUsMin: "", btcForUsMax: "", marketOutcome: "" };
 const activeFilterCount = (filters: DealFilters) => Object.entries(filters).filter(([key, value]) => key === "statuses" ? (value as string[]).length > 0 : Boolean(value)).length;
 const parseNum = (raw: string): number | null => { const n = Number(raw.trim()); return raw.trim() !== "" && Number.isFinite(n) ? n : null; };
 const inRange = (value: number | null, fromRaw: string, toRaw: string): boolean => {
@@ -146,6 +170,13 @@ const dealMatchesFilters = (row: JsonRecord, filters: DealFilters): boolean => {
   if (filters.cashFlowSign === "positive" && !(cashFlow !== null && cashFlow > 0)) return false;
   if (filters.cashFlowSign === "negative" && !(cashFlow !== null && cashFlow < 0)) return false;
   if (filters.statuses.length && !filters.statuses.includes(dealStatus(row).key)) return false;
+  if (!inRange(btcEntryMove(row), filters.btcEntryMin, filters.btcEntryMax)) return false;
+  if (!inRange(btcEntryForUs(row), filters.btcForUsMin, filters.btcForUsMax)) return false;
+  if (filters.marketOutcome) {
+    const winner = textValue(row.market_outcome).trim().toUpperCase();
+    const result = marketResult(row);
+    if (filters.marketOutcome === "pending" ? winner !== "" : filters.marketOutcome === "won" || filters.marketOutcome === "lost" ? result !== filters.marketOutcome : winner !== filters.marketOutcome) return false;
+  }
   return true;
 };
 const FilterIcon = () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden><path d="M4 5h16l-6 8v6l-4-2v-4z"/></svg>;
@@ -373,10 +404,13 @@ export default function Home() {
         <RangeField label="מכירה $" from={filters.sellUsdMin} to={filters.sellUsdMax} onFrom={v => setFilter({ sellUsdMin: v })} onTo={v => setFilter({ sellUsdMax: v })}/>
         <RangeField label="מחיר קנייה" hint="(0–1)" step="0.01" min={0} max={1} from={filters.buyPriceMin} to={filters.buyPriceMax} onFrom={v => setFilter({ buyPriceMin: v })} onTo={v => setFilter({ buyPriceMax: v })}/>
         <RangeField label="מחיר מכירה" hint="(0–1)" step="0.01" min={0} max={1} from={filters.sellPriceMin} to={filters.sellPriceMax} onFrom={v => setFilter({ sellPriceMin: v })} onTo={v => setFilter({ sellPriceMax: v })}/>
+        <RangeField label="BTC בכניסה $" hint="(תנועה מהפתיחה, + עלה / − ירד)" from={filters.btcEntryMin} to={filters.btcEntryMax} onFrom={v => setFilter({ btcEntryMin: v })} onTo={v => setFilter({ btcEntryMax: v })}/>
+        <RangeField label="BTC לטובת העסקה $" hint="(הפער שהשער בודק)" from={filters.btcForUsMin} to={filters.btcForUsMax} onFrom={v => setFilter({ btcForUsMin: v })} onTo={v => setFilter({ btcForUsMax: v })}/>
+        <div className="filter-field"><label>תוצאת שוק</label><select value={filters.marketOutcome} onChange={event => setFilter({ marketOutcome: event.target.value as DealFilters["marketOutcome"] })}><option value="">הכל</option><option value="UP">UP</option><option value="DOWN">DOWN</option><option value="won">לטובתנו (ירוק)</option><option value="lost">נגדנו (אדום)</option><option value="pending">לא הוכרע</option></select></div>
         <div className="filter-field status-field"><label>סטטוס{filters.statuses.length > 0 && <span className="hint"> ({filters.statuses.length} נבחרו)</span>}</label><div className="status-chips">{statusOptions.map(option => <button key={option.key} className={filters.statuses.includes(option.key) ? "on" : ""} onClick={() => setFilter({ statuses: filters.statuses.includes(option.key) ? filters.statuses.filter(k => k !== option.key) : [...filters.statuses, option.key] })}>{option.label}<span className="log-count">{option.count}</span></button>)}</div></div>
         <button className="button secondary filter-clear" disabled={!activeFilterCount(filters)} onClick={() => setFilter(EMPTY_FILTERS)}>נקה סינון</button>
       </div>}
-      {pageDeals.length ? <div className="table-scroll"><table><thead><tr><th>#</th><th>התחלה</th><th>סיום</th><th>שוק</th><th>טוקן</th><th>פעולות</th><th>קנייה $</th><th>מחיר קנייה</th><th>מכירה $</th><th>מחיר מכירה</th><th>עמלות</th><th>תזרים</th><th>נזילות כניסה</th><th>BTC בכניסה</th><th>BTC ביציאה</th><th>סטטוס</th></tr></thead><tbody>{pageDeals.map((row, index) => <tr key={`${textValue(row.deal_key)}-${index}`}><td>{textValue(row.seq) || "—"}</td><td>{dateTime(row.first_action_at)}</td><td>{dateTime(row.last_action_at)}</td><td>{textValue(row.market_title) || textValue(row.event_slug) || textValue(row.deal_key)}</td><td>{textValue(row.outcomes) || "—"}</td><td>{textValue(row.action_count)}</td><td>{money(row.buy_notional_usd)}</td><td>{avgPrice(row.buy_notional_usd, row.buy_size)}</td><td>{money(row.sell_notional_usd)}</td><td>{avgPrice(row.sell_notional_usd, row.sell_size)}</td><td>{money(row.fees_usd)}</td><td className={(numberValue(row.cash_flow_usd) ?? 0) >= 0 ? "positive" : "negative"}>{money(row.cash_flow_usd)}</td><td>{entryLiquidityCell(row)}</td><td>{btcEntryCell(row)}</td><td>{btcExitCell(row)}</td><td>{exitStatus(row)}</td></tr>)}</tbody></table></div> : <Empty quality={qualityValue(dealData.quality)} reason={activeFilterCount(filters) ? `אין עסקאות התואמות את הסינון (מתוך ${deals.length} בטווח). בדוק את הערכים — מחירים הם בין 0 ל־1, "מ־" הוא הגבול התחתון.` : "אין רשומות Polymarket בטווח שנבחר."}/>}
+      {pageDeals.length ? <div className="table-scroll"><table><thead><tr><th>#</th><th>התחלה</th><th>סיום</th><th>שוק</th><th>טוקן</th><th>פעולות</th><th>קנייה $</th><th>מחיר קנייה</th><th>מכירה $</th><th>מחיר מכירה</th><th>עמלות</th><th>תזרים</th><th>נזילות כניסה</th><th>BTC בכניסה</th><th>BTC ביציאה</th><th>תוצאת שוק</th><th>סטטוס</th></tr></thead><tbody>{pageDeals.map((row, index) => <tr key={`${textValue(row.deal_key)}-${index}`}><td>{textValue(row.seq) || "—"}</td><td>{dateTime(row.first_action_at)}</td><td>{dateTime(row.last_action_at)}</td><td>{textValue(row.market_title) || textValue(row.event_slug) || textValue(row.deal_key)}</td><td>{textValue(row.outcomes) || "—"}</td><td>{textValue(row.action_count)}</td><td>{money(row.buy_notional_usd)}</td><td>{avgPrice(row.buy_notional_usd, row.buy_size)}</td><td>{money(row.sell_notional_usd)}</td><td>{avgPrice(row.sell_notional_usd, row.sell_size)}</td><td>{money(row.fees_usd)}</td><td className={(numberValue(row.cash_flow_usd) ?? 0) >= 0 ? "positive" : "negative"}>{money(row.cash_flow_usd)}</td><td>{entryLiquidityCell(row)}</td><td>{btcEntryCell(row)}</td><td>{btcExitCell(row)}</td><td>{marketOutcomeCell(row)}</td><td>{exitStatus(row)}</td></tr>)}</tbody></table></div> : <Empty quality={qualityValue(dealData.quality)} reason={activeFilterCount(filters) ? `אין עסקאות התואמות את הסינון (מתוך ${deals.length} בטווח). בדוק את הערכים — מחירים הם בין 0 ל־1, "מ־" הוא הגבול התחתון.` : "אין רשומות Polymarket בטווח שנבחר."}/>}
       <div className="table-footer"><span>{filteredDeals.length === deals.length ? `${deals.length} עסקאות בטווח` : `${filteredDeals.length} מתוך ${deals.length} עסקאות (מסונן)`}{numberValue(dealData.total) !== null && (dealData.total as number) > deals.length && ` · מוצג ${deals.length} מתוך ${dealData.total} — צמצם טווח תאריכים`}</span></div>
       <div className="pagination"><button disabled={clampedTablePage <= 1} onClick={() => setTablePage(value => value - 1)}>הקודם</button><span>עמוד {clampedTablePage} מתוך {clientPageCount}</span><button disabled={clampedTablePage >= clientPageCount} onClick={() => setTablePage(value => value + 1)}>הבא</button></div></Card>
       {exportOpen && <ExportDialog csrf={csrf} onClose={() => setExportOpen(false)}/>}

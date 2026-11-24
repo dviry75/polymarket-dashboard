@@ -42,3 +42,13 @@ test("filters, custom dates, pagination, timeout and auth expiry UI exist", () =
   assert.match(page, /setTimeout\(\(\) => active\?\.abort\(\), 8000\)/);
   assert.match(page, /ה־session אינו בתוקף/);
 });
+
+test("deal table: BTC-entry filters and market-outcome column", () => {
+  assert.match(page, /<th>תוצאת שוק<\/th>/);
+  assert.match(page, /marketOutcomeCell\(row\)/);
+  assert.match(page, /row\.market_outcome/);
+  assert.match(page, /result === "won" \? "positive" : result === "lost" \? "negative"/);
+  assert.match(page, /inRange\(btcEntryMove\(row\), filters\.btcEntryMin, filters\.btcEntryMax\)/);
+  assert.match(page, /inRange\(btcEntryForUs\(row\), filters\.btcForUsMin, filters\.btcForUsMax\)/);
+  assert.match(page, /label="BTC בכניסה \$"/);
+});
