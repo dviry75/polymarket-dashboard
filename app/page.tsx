@@ -179,6 +179,27 @@ const dealMatchesFilters = (row: JsonRecord, filters: DealFilters): boolean => {
   }
   return true;
 };
+// Same formulas as the server's external_summary, applied to the deals that
+// pass the table filters, so the "פעילות מסחר" numbers follow the filter.
+const summarizeDeals = (rows: JsonRecord[]): JsonRecord => {
+  let wins = 0, losses = 0, grossProfit = 0, grossLoss = 0, fees = 0, total = 0, partial = false;
+  for (const row of rows) {
+    const cashFlow = numberValue(row.cash_flow_usd) ?? 0;
+    if (cashFlow > 0) { wins += 1; grossProfit += cashFlow; } else if (cashFlow < 0) { losses += 1; grossLoss -= cashFlow; }
+    fees += numberValue(row.fees_usd) ?? 0;
+    total += cashFlow;
+    if (textValue(row.quality) === "PARTIAL") partial = true;
+  }
+  const decided = wins + losses;
+  return {
+    quality: partial ? "PARTIAL" : "REAL", deal_count: rows.length, wins, losses,
+    win_rate_percent: decided ? wins / decided * 100 : null,
+    average_win_usd: wins ? grossProfit / wins : null,
+    average_loss_usd: losses ? grossLoss / losses : null,
+    profit_factor: grossLoss ? grossProfit / grossLoss : null,
+    fees_usd: fees, total_cash_flow_usd: total,
+  };
+};
 const FilterIcon = () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden><path d="M4 5h16l-6 8v6l-4-2v-4z"/></svg>;
 
 function RangeField({ label, hint, step, min, max, from, to, onFrom, onTo }: { label: string; hint?: string; step?: string; min?: number; max?: number; from: string; to: string; onFrom: (v: string) => void; onTo: (v: string) => void }) {
@@ -358,6 +379,9 @@ export default function Home() {
   const dealData = objectValue(snapshot?.externalDeals?.data), deals = arrayValue(dealData.items), summary = objectValue(snapshot?.externalSummary?.data);
   const statusOptions = Array.from(deals.reduce((byKey, row) => { const status = dealStatus(row); const entry = byKey.get(status.key); if (entry) entry.count += 1; else byKey.set(status.key, { key: status.key, label: status.label, count: 1 }); return byKey; }, new Map<string, { key: string; label: string; count: number }>()).values()).sort((a, b) => b.count - a.count);
   const filteredDeals = deals.filter(row => dealMatchesFilters(row, filters));
+  const summaryFiltered = activeFilterCount(filters) > 0;
+  const shownSummary = summaryFiltered ? summarizeDeals(filteredDeals) : summary;
+  const dealsTruncated = numberValue(dealData.total) !== null && (dealData.total as number) > deals.length;
   const clientPageCount = Math.max(1, Math.ceil(filteredDeals.length / tableSize));
   const clampedTablePage = Math.min(tablePage, clientPageCount);
   const pageDeals = filteredDeals.slice((clampedTablePage - 1) * tableSize, clampedTablePage * tableSize);
@@ -392,7 +416,7 @@ export default function Home() {
 
       <div className={`content-grid${SHOW_CONTROL_CARD ? "" : " single"}`}>
         {SHOW_CONTROL_CARD && <Card className="control-card"><div className="section-head"><div><h2>שליטה במכונה</h2><p>מוצג לצורך הבחנה בלבד</p></div><span className="state-pill warn"><Dot tone="warn"/>READ ONLY</span></div><div className="readonly-callout"><b>אין Command API בדאשבורד</b><span>כל הכפתורים disabled ואינם משנים local state.</span></div><div className="control-actions disabled-actions"><button disabled>הפסק כניסות<small>Pause entries</small></button><button disabled>השבת מסחר<small>שונה מ־Kill Switch</small></button><button disabled>בטל פקודות<small>אינו סוגר פוזיציות</small></button><button disabled>סגור פוזיציות<small>לא מחובר</small></button><button disabled>עצור שירות<small>systemd אינו נגיש</small></button><button className="emergency" disabled>Kill Switch<small>מצב שרת: {kill ? "פעיל" : "לא פעיל"}</small></button></div></Card>}
-        <Card className="activity-card"><SectionNotice label="Polymarket summary" section={snapshot?.sections.externalSummary} now={now}/><div className="section-head"><div><h2>פעילות מסחר (תזרים)</h2><p>מקור: רשומות Polymarket בלבד (fills + פדיונות) · תזרים = מכירות + פדיונות − קניות − עמלות. עסקה שעדיין לא נפדתה בפועל תוצג כפתוחה עד שפולימרקט ירשמו את הפדיון.</p></div><Badge quality={qualityValue(summary.quality)}/></div><div className="money">{money(summary.total_cash_flow_usd)}</div><div className="stats-grid"><Metric label="עסקאות" value={numberValue(summary.deal_count) === null ? "—" : String(summary.deal_count)}/><Metric label="תזרים חיובי" value={numberValue(summary.wins) === null ? "—" : String(summary.wins)}/><Metric label="תזרים שלילי" value={numberValue(summary.losses) === null ? "—" : String(summary.losses)}/><Metric label="אחוז חיובי" value={numberValue(summary.win_rate_percent) === null ? "—" : `${num.format(numberValue(summary.win_rate_percent)!)}%`}/><Metric label="תזרים חיובי ממוצע" value={money(summary.average_win_usd)}/><Metric label="תזרים שלילי ממוצע" value={money(summary.average_loss_usd)}/><Metric label="יחס תזרים" value={numberValue(summary.profit_factor) === null ? "—" : num.format(numberValue(summary.profit_factor)!)}/><Metric label="עמלות" value={money(summary.fees_usd)}/></div></Card>
+        <Card className="activity-card"><SectionNotice label="Polymarket summary" section={snapshot?.sections.externalSummary} now={now}/><div className="section-head"><div><h2>פעילות מסחר (תזרים)</h2><p>מקור: רשומות Polymarket בלבד (fills + פדיונות) · תזרים = מכירות + פדיונות − קניות − עמלות. עסקה שעדיין לא נפדתה בפועל תוצג כפתוחה עד שפולימרקט ירשמו את הפדיון.</p>{summaryFiltered && <p className="summary-filtered">מסונן לפי סינון הטבלה · {filteredDeals.length} מתוך {deals.length} עסקאות{dealsTruncated ? " (רק העסקאות שנטענו — צמצם טווח תאריכים)" : ""}</p>}</div><Badge quality={qualityValue(shownSummary.quality)}/></div><div className="money">{money(shownSummary.total_cash_flow_usd)}</div><div className="stats-grid"><Metric label="עסקאות" value={numberValue(shownSummary.deal_count) === null ? "—" : String(shownSummary.deal_count)}/><Metric label="תזרים חיובי" value={numberValue(shownSummary.wins) === null ? "—" : String(shownSummary.wins)}/><Metric label="תזרים שלילי" value={numberValue(shownSummary.losses) === null ? "—" : String(shownSummary.losses)}/><Metric label="אחוז חיובי" value={numberValue(shownSummary.win_rate_percent) === null ? "—" : `${num.format(numberValue(shownSummary.win_rate_percent)!)}%`}/><Metric label="תזרים חיובי ממוצע" value={money(shownSummary.average_win_usd)}/><Metric label="תזרים שלילי ממוצע" value={money(shownSummary.average_loss_usd)}/><Metric label="יחס תזרים" value={numberValue(shownSummary.profit_factor) === null ? "—" : num.format(numberValue(shownSummary.profit_factor)!)}/><Metric label="עמלות" value={money(shownSummary.fees_usd)}/></div></Card>
       </div>
 
       <Card className="table-card"><SectionNotice label="Polymarket deals" section={snapshot?.sections.externalDeals} now={now}/><div className="section-head"><div><h2>היסטוריית עסקאות</h2><p>מקור: רשומות Polymarket בלבד · עסקה = כל הפעולות על אירוע · תזרים = מכירות + פדיונות − קניות − עמלות</p></div><div className="head-actions"><button className="button secondary export-btn" onClick={() => setExportOpen(true)}>שליחת XL למייל</button><button className={`button secondary filter-btn${activeFilterCount(filters) ? " on" : ""}`} onClick={() => setFiltersOpen(value => !value)}><FilterIcon/>סינון{activeFilterCount(filters) > 0 && <span className="log-count">{activeFilterCount(filters)}</span>}</button><div className="controls"><select aria-label="טווח" value={selectedRange} onChange={event => setRange(event.target.value as DashboardQuery["range"])}><option value="today">היום</option><option value="yesterday">אתמול</option><option value="3d">3 ימים</option><option value="7d">7 ימים</option><option value="30d">30 ימים</option><option value="all">הכל</option><option value="custom">טווח מותאם</option></select>{selectedRange === "custom" && <><input aria-label="מתאריך" type="date" value={query.from || ""} onChange={event => { setQuery(value => ({ ...value, from: event.target.value })); setTablePage(1); }}/><input aria-label="עד תאריך" type="date" value={query.to || ""} onChange={event => { setQuery(value => ({ ...value, to: event.target.value })); setTablePage(1); }}/></>}</div><select aria-label="שורות בעמוד" className="page-size" value={tableSize} onChange={event => { setTableSize(Number(event.target.value)); setTablePage(1); }}><option value={25}>25 בעמוד</option><option value={50}>50 בעמוד</option><option value={100}>100 בעמוד</option></select><Badge quality={qualityValue(dealData.quality)}/></div></div>

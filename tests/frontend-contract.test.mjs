@@ -52,3 +52,10 @@ test("deal table: BTC-entry filters and market-outcome column", () => {
   assert.match(page, /inRange\(btcEntryForUs\(row\), filters\.btcForUsMin, filters\.btcForUsMax\)/);
   assert.match(page, /label="BTC בכניסה \$"/);
 });
+
+test("trading-activity numbers follow the deal-table filters", () => {
+  assert.match(page, /const shownSummary = summaryFiltered \? summarizeDeals\(filteredDeals\) : summary/);
+  assert.match(page, /money\(shownSummary\.total_cash_flow_usd\)/);
+  assert.doesNotMatch(page, /money\(summary\.total_cash_flow_usd\)/);
+  assert.match(page, /win_rate_percent: decided \? wins \/ decided \* 100 : null/);
+});
