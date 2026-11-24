@@ -21,7 +21,7 @@ export type DashboardSnapshot = {
   sections: DashboardSections;
   receivedAt: number;
 };
-export type DashboardQuery = { range: "today" | "yesterday" | "3d" | "7d" | "30d" | "custom"; from?: string; to?: string; page: number; pageSize: number };
+export type DashboardQuery = { range: "today" | "yesterday" | "3d" | "7d" | "30d" | "all" | "custom"; from?: string; to?: string; page: number; pageSize: number };
 export const PRODUCTION_DATA_SOURCE = "/live/dashboard/v1/" as const;
 export class AuthenticationRequiredError extends Error {}
 export class DashboardRequestError extends Error { status: number; constructor(message: string, status: number) { super(message); this.status = status; } }
