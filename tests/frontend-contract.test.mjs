@@ -59,3 +59,10 @@ test("trading-activity numbers follow the deal-table filters", () => {
   assert.doesNotMatch(page, /money\(summary\.total_cash_flow_usd\)/);
   assert.match(page, /win_rate_percent: decided \? wins \/ decided \* 100 : null/);
 });
+
+test("won/lost token counts follow the market outcome and the deal filters", () => {
+  assert.match(page, /const tokenResults = Array\.isArray\(dealData\.items\) \? countMarketResults\(filteredDeals\) : null/);
+  assert.match(page, /const result = marketResult\(row\); if \(result === "won"\) acc\.won \+= 1; else if \(result === "lost"\) acc\.lost \+= 1/);
+  assert.match(page, /label="טוקן ניצח"/);
+  assert.match(page, /label="טוקן הפסיד"/);
+});
