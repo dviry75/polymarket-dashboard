@@ -14,3 +14,6 @@
 @media (max-width:640px){.topbar .button{padding-inline:10px;font-size:12px}}
 
 .summary-filtered{margin-top:4px;color:var(--blue);font-weight:700}
+
+/* Trading-activity card: 10 numbers in two rows of five (narrower columns). */
+@media(min-width:761px){.activity-card .stats-grid{grid-template-columns:repeat(5,minmax(0,1fr))}.activity-card .stats-grid .metric:nth-child(4n){border-left:1px solid #edf1f5}.activity-card .stats-grid .metric:nth-child(5n){border-left:0}.activity-card .stats-grid .metric:nth-child(n+5){margin-top:0}.activity-card .stats-grid .metric:nth-child(n+6){margin-top:14px}}
