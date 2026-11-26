@@ -82,6 +82,12 @@ export async function fetchDashboardSnapshot(query: DashboardQuery, signal: Abor
   };
 }
 
+// Deals of a fixed range, independent of the range picked for the table (the
+// "פעילות לפי יום" widget always shows the last 7 days).
+export async function fetchExternalDeals(range: DashboardQuery["range"], signal: AbortSignal): Promise<Envelope> {
+  return get(`${PRODUCTION_DATA_SOURCE}external/deals?${params({ range, page: 1, pageSize: 5000 }, true)}`, signal);
+}
+
 export async function fetchExportRecipients(signal?: AbortSignal): Promise<string[]> {
   const response = await fetch(`${PRODUCTION_DATA_SOURCE}external/export/recipients`, { method: "GET", credentials: "same-origin", cache: "no-store", headers: { Accept: "application/json" }, signal });
   if (response.status === 401 || response.status === 403) throw new AuthenticationRequiredError("נדרשת התחברות מחדש");

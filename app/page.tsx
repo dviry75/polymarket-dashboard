@@ -2,7 +2,8 @@
 
 import "./live.css";
 import { useEffect, useRef, useState } from "react";
-import { AuthenticationRequiredError, arrayValue, boolValue, fetchDashboardSnapshot, fetchExportRecipients, fetchNotificationPrefs, logout, metricValue, numberValue, objectValue, qualityValue, requestTradeExport, saveNotificationPrefs, textValue, type DashboardQuery, type DashboardSection, type DashboardSnapshot, type JsonRecord, type MetricValue, type NotificationPrefs, type Quality } from "./live-data";
+import { DAILY_DAYS, groupDealsByDay } from "./daily-activity";
+import { AuthenticationRequiredError, arrayValue, boolValue, fetchDashboardSnapshot, fetchExternalDeals, fetchExportRecipients, fetchNotificationPrefs, logout, metricValue, numberValue, objectValue, qualityValue, requestTradeExport, saveNotificationPrefs, textValue, type DashboardQuery, type DashboardSection, type DashboardSnapshot, type JsonRecord, type MetricValue, type NotificationPrefs, type Quality } from "./live-data";
 
 const TZ = "Asia/Jerusalem";
 const SHOW_CONTROL_CARD = false; // "שליטה במכונה" hidden for now — flip to true to restore
@@ -276,6 +277,39 @@ function ActivityLog({ rows, quality, now }: { rows: JsonRecord[]; quality: Qual
   </Card>;
 }
 
+// "פעילות לפי יום": the trading-activity numbers for each of the last 7 days
+// (Jerusalem calendar days, by each deal's first action). Its own 7-day data,
+// so neither the table's range nor its filters change it.
+const signedTone = (value: unknown) => { const n = numberValue(value); return n === null || n === 0 ? "" : n > 0 ? "positive" : "negative"; };
+const countText = (value: unknown) => numberValue(value) === null ? "—" : String(value);
+const dailyCells = (day: JsonRecord, tokens: { won: number; lost: number }) => <>
+  <td className={signedTone(day.total_cash_flow_usd)}><b>{money(day.total_cash_flow_usd)}</b></td>
+  <td>{countText(day.deal_count)}</td><td>{countText(day.wins)}</td><td>{countText(day.losses)}</td>
+  <td className={tokens.won ? "positive" : ""}>{tokens.won}</td><td className={tokens.lost ? "negative" : ""}>{tokens.lost}</td>
+  <td>{numberValue(day.win_rate_percent) === null ? "—" : `${num.format(Math.round(numberValue(day.win_rate_percent)! * 10) / 10)}%`}</td>
+  <td>{money(day.average_win_usd)}</td><td>{money(day.average_loss_usd)}</td>
+  <td>{numberValue(day.profit_factor) === null ? "—" : num.format(Math.round(numberValue(day.profit_factor)! * 1000) / 1000)}</td>
+  <td>{money(day.fees_usd)}</td>
+</>;
+function DailyActivity({ rows, quality, error, now }: { rows: JsonRecord[] | null; quality: Quality; error: string; now: number }) {
+  const head = <div className="section-head"><div><h2>פעילות לפי יום · {DAILY_DAYS} ימים אחרונים</h2><p>אותם מספרים כמו בכרטיס פעילות מסחר, לכל יום לפי שעון ישראל (יום = יום הכניסה לעסקה) · לא מושפע מהטווח ומהסינון של הטבלה</p>{error && <p className="daily-error">הרענון האחרון נכשל: {error}{rows ? " · מוצגים הנתונים הקודמים" : ""}</p>}</div><Badge quality={rows ? quality : "UNAVAILABLE"}/></div>;
+  if (!rows || !now) return <Card className="daily-card">{head}<Empty reason={error ? "לא ניתן לטעון את עסקאות 7 הימים." : "טוען עסקאות של 7 ימים…"}/></Card>;
+  const days = groupDealsByDay(rows, now).map(day => ({ ...day, summary: summarizeDeals(day.rows), tokens: countMarketResults(day.rows) }));
+  const all = days.flatMap(day => day.rows);
+  const cashOf = (summary: JsonRecord) => numberValue(summary.total_cash_flow_usd) ?? 0;
+  const scale = Math.max(0, ...days.map(day => Math.abs(cashOf(day.summary))));
+  return <Card className="daily-card">{head}
+    <div className="daily-bars" role="img" aria-label="תזרים יומי">{[...days].reverse().map(day => { const cash = cashOf(day.summary); const height = scale ? `${Math.max(3, Math.abs(cash) / scale * 100)}%` : "0"; return <div className="daily-bar" key={day.key} title={`${day.label} · תזרים ${money(cash)} · ${day.rows.length} עסקאות`}>
+      <div className="bar-half up">{cash > 0 && <i className="pos" style={{ height }}/>}</div>
+      <div className="bar-half down">{cash < 0 && <i className="neg" style={{ height }}/>}</div>
+      <b className={signedTone(cash)}>{day.rows.length ? money(cash) : "—"}</b><small>{day.label}</small>
+    </div>; })}</div>
+    <div className="table-scroll"><table className="daily-table"><thead><tr><th>יום</th><th>תזרים</th><th>עסקאות</th><th>תזרים חיובי</th><th>תזרים שלילי</th><th>טוקן ניצח</th><th>טוקן הפסיד</th><th>אחוז חיובי</th><th>תזרים חיובי ממוצע</th><th>תזרים שלילי ממוצע</th><th>יחס תזרים</th><th>עמלות</th></tr></thead>
+      <tbody>{days.map((day, index) => <tr key={day.key} className={day.rows.length ? "" : "empty-day"}><td>{day.label}{index === 0 && <span className="today-tag">היום</span>}</td>{dailyCells(day.summary, day.tokens)}</tr>)}
+        <tr className="daily-total"><td>סה&quot;כ {DAILY_DAYS} ימים</td>{dailyCells(summarizeDeals(all), countMarketResults(all))}</tr></tbody></table></div>
+  </Card>;
+}
+
 function ExportDialog({ csrf, onClose }: { csrf: string; onClose: () => void }) {
   const [recipients, setRecipients] = useState<string[]>([]);
   const [choice, setChoice] = useState("");
@@ -358,6 +392,8 @@ export default function Home() {
   const [exportOpen, setExportOpen] = useState(false);
   const [prefsOpen, setPrefsOpen] = useState(false);
   const queryKey = JSON.stringify(query);
+  const [dailyDeals, setDailyDeals] = useState<{ rows: JsonRecord[]; quality: Quality } | null>(null);
+  const [dailyError, setDailyError] = useState("");
 
   useEffect(() => { const clock = window.setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(clock); }, []);
   useEffect(() => {
@@ -375,6 +411,20 @@ export default function Home() {
   // queryKey is a stable serialization that prevents duplicate polling on render.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [queryKey]);
+
+  // "פעילות לפי יום": its own fixed 7-day request, every minute (5 min when hidden).
+  useEffect(() => {
+    let stopped = false, active: AbortController | null = null, timer: number | undefined;
+    const poll = async () => {
+      if (stopped || active) return;
+      active = new AbortController(); const timeout = window.setTimeout(() => active?.abort(), 15000);
+      try { const envelope = await fetchExternalDeals("7d", active.signal); const data = objectValue(envelope.data); if (!stopped) { setDailyDeals({ rows: arrayValue(data.items), quality: qualityValue(data.quality) }); setDailyError(""); } }
+      catch (reason) { if (!stopped && !(reason instanceof AuthenticationRequiredError)) setDailyError(reason instanceof Error ? reason.message : "בקשה נכשלה"); }
+      finally { clearTimeout(timeout); active = null; if (!stopped) timer = window.setTimeout(poll, document.hidden ? 300000 : 60000); }
+    };
+    void poll();
+    return () => { stopped = true; if (timer) clearTimeout(timer); active?.abort(); };
+  }, []);
 
   const root = objectValue(snapshot?.overview?.data), account = objectValue(root.account), markets = objectValue(root.markets), health = objectValue(root.health);
   const activity = arrayValue(objectValue(root.activity).items), alerts = arrayValue(objectValue(root.alerts).items);
@@ -442,6 +492,7 @@ export default function Home() {
       {pageDeals.length ? <div className="table-scroll"><table><thead><tr><th>#</th><th>התחלה</th><th>סיום</th><th>שוק</th><th>טוקן</th><th>פעולות</th><th>קנייה $</th><th>מחיר קנייה</th><th>מכירה $</th><th>מחיר מכירה</th><th>עמלות</th><th>תזרים</th><th>נזילות כניסה</th><th>BTC בכניסה</th><th>BTC ביציאה</th><th>תוצאת שוק</th><th>סטטוס</th></tr></thead><tbody>{pageDeals.map((row, index) => <tr key={`${textValue(row.deal_key)}-${index}`}><td>{textValue(row.seq) || "—"}</td><td>{dateTime(row.first_action_at)}</td><td>{dateTime(row.last_action_at)}</td><td>{textValue(row.market_title) || textValue(row.event_slug) || textValue(row.deal_key)}</td><td>{textValue(row.outcomes) || "—"}</td><td>{textValue(row.action_count)}</td><td>{money(row.buy_notional_usd)}</td><td>{avgPrice(row.buy_notional_usd, row.buy_size)}</td><td>{money(row.sell_notional_usd)}</td><td>{avgPrice(row.sell_notional_usd, row.sell_size)}</td><td>{money(row.fees_usd)}</td><td className={(numberValue(row.cash_flow_usd) ?? 0) >= 0 ? "positive" : "negative"}>{money(row.cash_flow_usd)}</td><td>{entryLiquidityCell(row)}</td><td>{btcEntryCell(row)}</td><td>{btcExitCell(row)}</td><td>{marketOutcomeCell(row)}</td><td>{exitStatus(row)}</td></tr>)}</tbody></table></div> : <Empty quality={qualityValue(dealData.quality)} reason={activeFilterCount(filters) ? `אין עסקאות התואמות את הסינון (מתוך ${deals.length} בטווח). בדוק את הערכים — מחירים הם בין 0 ל־1, "מ־" הוא הגבול התחתון.` : "אין רשומות Polymarket בטווח שנבחר."}/>}
       <div className="table-footer"><span>{filteredDeals.length === deals.length ? `${deals.length} עסקאות בטווח` : `${filteredDeals.length} מתוך ${deals.length} עסקאות (מסונן)`}{numberValue(dealData.total) !== null && (dealData.total as number) > deals.length && ` · מוצג ${deals.length} מתוך ${dealData.total} — צמצם טווח תאריכים`}</span></div>
       <div className="pagination"><button disabled={clampedTablePage <= 1} onClick={() => setTablePage(value => value - 1)}>הקודם</button><span>עמוד {clampedTablePage} מתוך {clientPageCount}</span><button disabled={clampedTablePage >= clientPageCount} onClick={() => setTablePage(value => value + 1)}>הבא</button></div></Card>
+      {state !== "auth" && <DailyActivity rows={dailyDeals?.rows ?? null} quality={dailyDeals?.quality ?? "UNAVAILABLE"} error={dailyError} now={now}/>}
       {exportOpen && <ExportDialog csrf={csrf} onClose={() => setExportOpen(false)}/>}
       {prefsOpen && <NotificationsDialog csrf={csrf} onClose={() => setPrefsOpen(false)}/>}
 
